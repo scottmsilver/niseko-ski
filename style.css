@@ -1,0 +1,365 @@
+  :root {
+    --bg: #1a1a2e;
+    --card: #16213e;
+    --card-border: #2a2f5b;
+    --text: #fef0f5;
+    --text-dim: #b8a9c9;
+    --green: #7bed9f;
+    --red: #ff6b81;
+    --yellow: #eccc68;
+    --blue: #70a1ff;
+    --orange: #ff9f43;
+    --pink: #ff6b9d;
+    --purple: #a29bfe;
+    --teal: #55efc4;
+    --pulse: #ffa502;
+    --tab-height: 56px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { overflow-x: hidden; }
+  body {
+    font-family: 'Nunito', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 10px 12px;
+    padding-bottom: calc(var(--tab-height) + 10px);
+  }
+
+  /* Header - two compact lines */
+  header {
+    text-align: center;
+    margin-bottom: 8px;
+  }
+  .header-line1 {
+    font-size: 1.2rem;
+    font-weight: 700;
+    background: linear-gradient(135deg, var(--pink), var(--blue));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .header-line2 {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 12px;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    margin-top: 2px;
+  }
+  .header-line2 span { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+
+  /* Summary - single line */
+  .summary-bar {
+    display: flex;
+    justify-content: center;
+    gap: 6px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+  }
+  .summary-chip {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 0.72rem;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+  }
+  .summary-chip .count { font-weight: 700; font-size: 0.9rem; }
+
+  /* Changes banner */
+  .changes-banner {
+    background: rgba(255, 107, 157, 0.12);
+    border: 1px solid rgba(255, 107, 157, 0.3);
+    border-radius: 8px;
+    padding: 8px 12px;
+    margin-bottom: 8px;
+    display: none;
+  }
+  .changes-banner.visible { display: block; }
+  .changes-banner h3 {
+    color: var(--pulse);
+    font-size: 0.8rem;
+    margin-bottom: 4px;
+  }
+  .change-item {
+    font-size: 0.75rem;
+    color: var(--yellow);
+    padding: 2px 0;
+  }
+  .change-item .time { color: var(--orange); margin-right: 4px; }
+
+  /* Bottom tab bar */
+  .tab-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: var(--tab-height);
+    background: #0f0f23;
+    border-top: 1px solid var(--card-border);
+    display: flex;
+    z-index: 100;
+  }
+  .tab-btn {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 0.65rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: color 0.2s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .tab-btn .tab-icon { font-size: 1.2rem; }
+  .tab-btn.active { color: var(--pink); }
+  .tab-btn:hover { color: var(--text); }
+
+  /* Tab content */
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* Trail map tab */
+  .trail-map-container {
+    width: 100%;
+    height: calc(100vh - var(--tab-height) - 80px);
+    overflow: hidden;
+    border-radius: 10px;
+    background: #111;
+    position: relative;
+    touch-action: none;
+    cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .trail-map-container:active { cursor: grabbing; }
+  .trail-map-container img {
+    position: absolute;
+    top: 0;
+    left: 0;
+    transform-origin: 0 0;
+    will-change: transform;
+    max-width: none;
+    pointer-events: none;
+    -webkit-user-drag: none;
+  }
+  .trail-map-controls {
+    position: absolute;
+    bottom: 12px;
+    right: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    z-index: 10;
+  }
+  .trail-map-controls button {
+    width: 40px;
+    height: 40px;
+    border-radius: 8px;
+    border: 1px solid var(--card-border);
+    background: rgba(22, 33, 62, 0.9);
+    color: var(--text);
+    font-size: 1.3rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+  .trail-map-controls button:active { background: rgba(42, 47, 91, 0.9); }
+  .trail-map-loading {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-dim);
+    font-size: 0.9rem;
+  }
+
+  /* Weather tab */
+  .weather-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
+    gap: 12px;
+  }
+  .weather-card {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    padding: 14px;
+  }
+  .weather-card h3 {
+    font-size: 0.95rem;
+    font-weight: 600;
+    margin-bottom: 10px;
+    color: var(--pink);
+  }
+  .wx-stations {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .wx-station h4 {
+    font-size: 0.7rem;
+    color: var(--purple);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+  }
+  .wx-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.8rem;
+    padding: 2px 0;
+  }
+  .wx-row .wx-label { color: var(--text-dim); }
+  .wx-row .wx-val { text-align: right; }
+  .wx-temp {
+    font-size: 1.6rem;
+    font-weight: 700;
+    margin-bottom: 2px;
+    color: var(--teal);
+  }
+  .wx-condition {
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+  }
+
+  /* Lifts tab */
+  .resorts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr));
+    gap: 12px;
+    padding-bottom: 60vh;
+  }
+  .resort-card {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+  }
+  .resort-header {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--card-border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: var(--card);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  .resort-header h2 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--pink);
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+  }
+  .resort-updated {
+    font-size: 0.65rem;
+    font-weight: 400;
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+  .resort-stats {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+  }
+  .resort-stats .open-count { color: var(--green); font-weight: 600; }
+
+  .lift-list { padding: 2px 0; }
+  .lift-row {
+    padding: 7px 14px;
+    border-bottom: 1px solid rgba(42, 47, 91, 0.5);
+    transition: background 0.3s;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .lift-row:last-child { border-bottom: none; }
+  .lift-row.changed {
+    background: rgba(255, 159, 67, 0.15);
+    animation: flash 3s ease-out;
+  }
+  @keyframes flash {
+    0% { background: rgba(255, 159, 67, 0.3); }
+    100% { background: transparent; }
+  }
+  .lift-info {
+    flex: 1;
+    min-width: 0;
+  }
+  .lift-name {
+    font-size: 0.88rem;
+    font-weight: 500;
+  }
+  .lift-detail {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+  }
+  .lift-status-text {
+    font-size: 0.68rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    white-space: nowrap;
+    text-align: right;
+    flex-shrink: 0;
+  }
+  .lift-status-text.operating { color: var(--green); }
+  .lift-status-text.slowed { color: var(--yellow); }
+  .lift-status-text.standby { color: var(--blue); }
+  .lift-status-text.on-hold { color: var(--orange); }
+  .lift-status-text.closed { color: var(--purple); }
+
+  .error-banner {
+    background: rgba(255, 107, 129, 0.15);
+    border: 1px solid rgba(255, 107, 129, 0.3);
+    color: var(--red);
+    border-radius: 8px;
+    padding: 8px;
+    margin-bottom: 8px;
+    text-align: center;
+    font-size: 0.8rem;
+    display: none;
+  }
+  .error-banner.visible { display: block; }
+
+  .loading {
+    text-align: center;
+    padding: 60px;
+    color: var(--text-dim);
+    font-size: 1rem;
+  }
+  .loading .spinner {
+    width: 28px;
+    height: 28px;
+    border: 3px solid var(--card-border);
+    border-top-color: var(--pink);
+    border-radius: 50%;
+    margin: 0 auto 12px;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  @media (max-width: 600px) {
+    body { padding: 6px; padding-bottom: calc(var(--tab-height) + 6px); }
+    .resorts { grid-template-columns: 1fr; }
+    .weather-grid { grid-template-columns: 1fr; }
+    .summary-bar { gap: 4px; }
+    .summary-chip { padding: 3px 6px; font-size: 0.68rem; }
+    .summary-chip .count { font-size: 0.82rem; }
+  }
