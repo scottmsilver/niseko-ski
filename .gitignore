@@ -1,0 +1,21 @@
+# Android build artifacts
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/gradle-8.5/
+
+# IDE
+.idea/
+*.iml
+
+# APK binaries
+*.apk
+
+# Test screenshots
+android/screenshot*.png
+android/xvfb_screenshot.png
+
+# OS
+.DS_Store
+Thumbs.db
