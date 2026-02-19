@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Niseko United</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <style>
@@ -25,8 +28,9 @@
     --tab-height: 56px;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { overflow-x: hidden; }
   body {
-    font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-family: 'Nunito', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
     background: var(--bg);
     color: var(--text);
     min-height: 100vh;
@@ -64,7 +68,7 @@
     justify-content: center;
     gap: 6px;
     margin-bottom: 8px;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
   }
   .summary-chip {
     background: var(--card);
@@ -199,7 +203,7 @@
   /* Weather tab */
   .weather-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
     gap: 12px;
   }
   .weather-card {
@@ -249,7 +253,7 @@
   /* Lifts tab */
   .resorts {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr));
     gap: 12px;
     padding-bottom: 60vh;
   }
@@ -328,7 +332,7 @@
   .lift-status-text.operating { color: var(--green); }
   .lift-status-text.slowed { color: var(--yellow); }
   .lift-status-text.standby { color: var(--blue); }
-  .lift-status-text.suspended { color: var(--orange); }
+  .lift-status-text.on-hold { color: var(--orange); }
   .lift-status-text.closed { color: var(--purple); }
 
   .error-banner {
@@ -512,7 +516,7 @@ function initTrailMap() {
     applyTransform();
   }
 
-  img.src = 'https://www.niseko.ne.jp/en/wp-content/uploads/2026/02/2025-2026_WEBMAP_EG-1-scaled.jpg';
+  img.src = 'trail-map.jpg';
   img.onload = () => { loading.style.display = 'none'; fitToContainer(); };
   img.onerror = () => { loading.textContent = 'Failed to load trail map'; };
 
@@ -653,15 +657,6 @@ LIFT_DATA.features = LIFT_DATA.features
   .filter(f => LIFT_NAME_MAP[f.properties.name])
   .map(f => { f.properties.en_name = LIFT_NAME_MAP[f.properties.name]; return f; });
 
-const STATUS_COLORS = {
-  'OPERATING': '#7bed9f',
-  'OPERATION_SLOWED': '#eccc68',
-  'STANDBY': '#70a1ff',
-  'OPERATION_TEMPORARILY_SUSPENDED': '#ff9f43',
-  'SUSPENDED_CLOSED': '#a29bfe',
-  'CLOSED': '#a29bfe',
-};
-
 let mapRef = null;
 
 function updateMapLifts() {
@@ -673,7 +668,7 @@ function updateMapLifts() {
   LIFT_DATA.features.forEach(f => {
     const en = f.properties.en_name;
     f.properties.status = statusByName[en] || 'unknown';
-    f.properties.statusColor = STATUS_COLORS[f.properties.status] || '#555';
+    f.properties.statusColor = statusHex(f.properties.status);
   });
 
   const src = mapRef.getSource('lifts');
@@ -908,40 +903,34 @@ function initMap() {
   updatePos();
 }
 
-function statusClass(status) {
-  if (status === 'OPERATING') return 'operating';
-  if (status === 'OPERATION_SLOWED') return 'slowed';
-  if (status === 'STANDBY') return 'standby';
-  if (status === 'OPERATION_TEMPORARILY_SUSPENDED') return 'suspended';
-  if (status === 'SUSPENDED_CLOSED' || status === 'CLOSED') return 'closed';
-  return 'closed';
-}
+const STATUS_INFO = {
+  'OPERATING':                       { css: 'operating', label: 'Open',    color: 'var(--green)',  hex: '#7bed9f' },
+  'OPERATION_SLOWED':                { css: 'slowed',    label: 'Slowed',  color: 'var(--yellow)', hex: '#eccc68' },
+  'STANDBY':                         { css: 'standby',   label: 'Standby', color: 'var(--blue)',   hex: '#70a1ff' },
+  'OPERATION_TEMPORARILY_SUSPENDED': { css: 'on-hold',   label: 'On Hold', color: 'var(--orange)', hex: '#ff9f43' },
+  'SUSPENDED_CLOSED':                { css: 'closed',    label: 'Closed',  color: 'var(--purple)', hex: '#a29bfe' },
+  'CLOSED':                          { css: 'closed',    label: 'Closed',  color: 'var(--purple)', hex: '#a29bfe' },
+};
+const DEFAULT_STATUS_INFO = { css: 'closed', label: 'Closed', color: 'var(--purple)', hex: '#555' };
 
-function statusLabel(status) {
-  if (status === 'OPERATING') return 'Open';
-  if (status === 'OPERATION_SLOWED') return 'Slowed';
-  if (status === 'STANDBY') return 'Standby';
-  if (status === 'OPERATION_TEMPORARILY_SUSPENDED') return 'On Hold';
-  if (status === 'SUSPENDED_CLOSED') return 'Closed';
-  if (status === 'CLOSED') return 'Closed';
-  return status;
-}
+function statusInfo(status) { return STATUS_INFO[status] || DEFAULT_STATUS_INFO; }
+function statusClass(status) { return statusInfo(status).css; }
+function statusLabel(status) { return statusInfo(status).label; }
+function statusHex(status) { return statusInfo(status).hex; }
 
 function isRunning(status) {
   return status === 'OPERATING' || status === 'OPERATION_SLOWED';
 }
 
-function jstNowMinutes() {
-  const now = new Date();
-  // Get current time in JST using Intl
-  const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Tokyo', hour: 'numeric', minute: 'numeric', hour12: false }).formatToParts(now);
-  const h = parseInt(parts.find(p => p.type === 'hour').value);
-  const m = parseInt(parts.find(p => p.type === 'minute').value);
-  return h * 60 + m;
+function jstNow() {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Tokyo', hour: 'numeric', minute: 'numeric', hour12: false }).formatToParts(new Date());
+  return { h: parseInt(parts.find(p => p.type === 'hour').value), m: parseInt(parts.find(p => p.type === 'minute').value) };
 }
 
+function jstNowMinutes() { const { h, m } = jstNow(); return h * 60 + m; }
+
 function fmtTime(t) {
-  const [h, m] = t.split(':').map(Number);
+  const [h, m] = typeof t === 'string' ? t.split(':').map(Number) : [t.h, t.m];
   const hr = h % 12 || 12;
   const suffix = h < 12 ? 'a' : 'p';
   return m === 0 ? `${hr}${suffix}` : `${hr}:${String(m).padStart(2,'0')}${suffix}`;
@@ -967,27 +956,22 @@ async function fetchJSON(url) {
   return res.json();
 }
 
+function fetchResortData(path, key) {
+  return Promise.all(RESORTS.map(r =>
+    fetchJSON(`${API_BASE}/${path}?${key === 'lifts' ? 'facilityType=lift&' : ''}lang=en&skiareaId=${r.id}`)
+      .then(d => [r.id, d.results || []])
+      .catch(() => [r.id, null])
+  )).then(results => Object.fromEntries(results));
+}
+
 async function fetchAllData() {
-  const liftPromises = RESORTS.map(r =>
-    fetchJSON(`${API_BASE}/latest-facility/backward?facilityType=lift&lang=en&skiareaId=${r.id}`)
-      .then(d => ({ resortId: r.id, lifts: d.results || [] }))
-      .catch(() => ({ resortId: r.id, lifts: null }))
-  );
-  const weatherPromises = RESORTS.map(r =>
-    fetchJSON(`${API_BASE}/latest-weather/backward?lang=en&skiareaId=${r.id}`)
-      .then(d => ({ resortId: r.id, weather: d.results || [] }))
-      .catch(() => ({ resortId: r.id, weather: null }))
-  );
-  const [liftResults, weatherResults] = await Promise.all([
-    Promise.all(liftPromises), Promise.all(weatherPromises),
+  const [lifts, weather] = await Promise.all([
+    fetchResortData('latest-facility/backward', 'lifts'),
+    fetchResortData('latest-weather/backward', 'weather'),
   ]);
   const data = {};
   for (const r of RESORTS) {
-    data[r.id] = {
-      resort: r,
-      lifts: (liftResults.find(l => l.resortId === r.id) || {}).lifts || null,
-      weather: (weatherResults.find(w => w.resortId === r.id) || {}).weather || null,
-    };
+    data[r.id] = { resort: r, lifts: lifts[r.id], weather: weather[r.id] };
   }
   return data;
 }
@@ -1093,20 +1077,20 @@ function renderLifts(data) {
   content.innerHTML = `<div class="resorts">${resortHTML}</div>`;
 
   const allLifts = RESORTS.flatMap(r => data[r.id]?.lifts || []);
-  const counts = {
-    operating: allLifts.filter(l => l.status === 'OPERATING').length,
-    slowed: allLifts.filter(l => l.status === 'OPERATION_SLOWED').length,
-    standby: allLifts.filter(l => l.status === 'STANDBY').length,
-    suspended: allLifts.filter(l => l.status === 'OPERATION_TEMPORARILY_SUSPENDED').length,
-    closed: allLifts.filter(l => l.status === 'SUSPENDED_CLOSED' || l.status === 'CLOSED').length,
-  };
+  const grouped = {};
+  for (const l of allLifts) {
+    const css = statusClass(l.status);
+    grouped[css] = (grouped[css] || 0) + 1;
+  }
+  const summaryOrder = ['operating', 'slowed', 'standby', 'on-hold', 'closed'];
   const summaryBar = document.getElementById('summary-bar');
   const chips = [];
-  chips.push(`<div class="summary-chip"><span class="count" style="color:var(--green)">${counts.operating}</span>Open</div>`);
-  if (counts.slowed > 0) chips.push(`<div class="summary-chip"><span class="count" style="color:var(--yellow)">${counts.slowed}</span>Slow</div>`);
-  if (counts.standby > 0) chips.push(`<div class="summary-chip"><span class="count" style="color:var(--blue)">${counts.standby}</span>Standby</div>`);
-  chips.push(`<div class="summary-chip"><span class="count" style="color:var(--orange)">${counts.suspended}</span>Suspended</div>`);
-  if (counts.closed > 0) chips.push(`<div class="summary-chip"><span class="count" style="color:var(--purple)">${counts.closed}</span>Closed</div>`);
+  for (const css of summaryOrder) {
+    const count = grouped[css] || 0;
+    if (count === 0 && css !== 'operating' && css !== 'on-hold') continue;
+    const entry = Object.values(STATUS_INFO).find(s => s.css === css) || DEFAULT_STATUS_INFO;
+    chips.push(`<div class="summary-chip"><span class="count" style="color:${entry.color}">${count}</span>${entry.label}</div>`);
+  }
   chips.push(`<div class="summary-chip"><span class="count" style="color:var(--text)">${allLifts.length}</span>Total</div>`);
   summaryBar.innerHTML = chips.join('');
 }
@@ -1118,14 +1102,7 @@ function updateMeta(error) {
     lastUpdate.style.color = 'var(--red)';
   } else {
     lastUpdate.style.color = '';
-    const now = new Date();
-    const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Tokyo', hour: 'numeric', minute: 'numeric', hour12: false }).formatToParts(now);
-    const h = parseInt(parts.find(p => p.type === 'hour').value);
-    const m = parseInt(parts.find(p => p.type === 'minute').value);
-    const hr = h % 12 || 12;
-    const suffix = h < 12 ? 'a' : 'p';
-    const timeStr = m === 0 ? `${hr}${suffix}` : `${hr}:${String(m).padStart(2,'0')}${suffix}`;
-    lastUpdate.textContent = `Updated ${timeStr}`;
+    lastUpdate.textContent = `Updated ${fmtTime(jstNow())}`;
   }
 }
 
