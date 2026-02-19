@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
@@ -13,6 +14,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -126,26 +129,42 @@ fun NisekoApp(viewModel: MainViewModel = viewModel()) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun NisekoTopBar(updateTime: String) {
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxWidth()
+            .height(IntrinsicSize.Min)
             .background(NisekoBg)
             .statusBarsPadding()
             .padding(vertical = 8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text(
-            "\u26F7 Niseko United",
-            fontSize = 20.sp,
-            fontWeight = FontWeight.Bold,
-            color = NisekoPink,
+        // Mountain image on the left, spanning full height of the text
+        Image(
+            painter = painterResource(R.drawable.yotei),
+            contentDescription = null,
+            contentScale = ContentScale.FillHeight,
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .fillMaxHeight()
+                .padding(start = 4.dp),
         )
-        Text(
-            updateTime,
-            fontSize = 11.sp,
-            color = NisekoTextDim,
-            modifier = Modifier.padding(top = 2.dp),
-        )
+        // Text centered across the full width
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                "Niseko United",
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                color = NisekoPink,
+            )
+            Text(
+                updateTime,
+                fontSize = 11.sp,
+                color = NisekoTextDim,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
     }
 }
 

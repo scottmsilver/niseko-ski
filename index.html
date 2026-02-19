@@ -12,19 +12,23 @@
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 </head>
 <body>
-<header>
-  <div class="header-line1">⛷ Niseko United</div>
-  <div class="header-line2">
-    <span id="last-update">Loading...</span>
+<div class="hero">
+  <img src="yotei.png" alt="" class="header-mountain" />
+  <div class="hero-content">
+    <header>
+      <div class="header-line1">Niseko United</div>
+      <div class="header-line2">
+        <span id="last-update">Loading...</span>
+      </div>
+    </header>
+    <div class="error-banner" id="error-banner"></div>
+    <div class="changes-banner" id="changes-banner">
+      <h3>Recent Changes (last 10 min)</h3>
+      <div id="changes-list"></div>
+    </div>
+    <div class="summary-bar" id="summary-bar"></div>
   </div>
-</header>
-
-<div class="error-banner" id="error-banner"></div>
-<div class="changes-banner" id="changes-banner">
-  <h3>Recent Changes (last 10 min)</h3>
-  <div id="changes-list"></div>
 </div>
-<div class="summary-bar" id="summary-bar"></div>
 
 <!-- Lifts Tab -->
 <div class="tab-panel active" id="panel-lifts">

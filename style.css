@@ -26,10 +26,25 @@
     padding-bottom: calc(var(--tab-height) + 10px);
   }
 
-  /* Header - two compact lines */
-  header {
-    text-align: center;
+  /* Hero (mountain + header + summary) */
+  .hero {
+    position: relative;
     margin-bottom: 8px;
+  }
+  .header-mountain {
+    position: absolute;
+    left: 0;
+    top: 0;
+    height: 100%;
+    width: auto;
+    object-fit: contain;
+    object-position: left center;
+  }
+  .hero-content {
+    text-align: center;
+  }
+  header {
+    margin-bottom: 4px;
   }
   .header-line1 {
     font-size: 1.2rem;
@@ -55,7 +70,6 @@
     display: flex;
     justify-content: center;
     gap: 6px;
-    margin-bottom: 8px;
     flex-wrap: wrap;
   }
   .summary-chip {
