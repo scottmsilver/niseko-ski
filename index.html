@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#f5f5f7">
 <title>Niseko United</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -10,10 +11,19 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
 <link rel="stylesheet" href="style.css">
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script>
+  // Apply saved theme/font before render to avoid flash
+  (function() {
+    var theme = localStorage.getItem('niseko-theme');
+    if (theme && theme !== 'light') document.documentElement.setAttribute('data-theme', theme);
+    var scale = localStorage.getItem('niseko-font-scale');
+    if (scale) document.documentElement.style.setProperty('--font-scale', scale);
+  })();
+</script>
 </head>
 <body>
 <div class="hero">
-  <img src="yotei.png" alt="" class="header-mountain" />
+  <div class="header-mountain"></div>
   <div class="hero-content">
     <header>
       <div class="header-line1">Niseko United</div>
@@ -58,28 +68,43 @@
     <div class="trail-map-controls">
       <button id="trail-zoom-in" title="Zoom in">+</button>
       <button id="trail-zoom-out" title="Zoom out">&minus;</button>
-      <button id="trail-zoom-fit" title="Fit to screen">⊡</button>
+      <button id="trail-zoom-fit" title="Fit to screen">&#x2299;</button>
     </div>
+  </div>
+</div>
+
+<!-- Settings Tab -->
+<div class="tab-panel" id="panel-settings">
+  <div class="settings-content">
+    <h2>Theme</h2>
+    <div class="theme-picker" id="theme-picker"></div>
+    <h2>Font Size</h2>
+    <div class="font-options" id="font-options"></div>
+    <p class="font-preview">Preview: The quick brown fox jumps over the lazy dog</p>
   </div>
 </div>
 
 <!-- Bottom Tab Bar -->
 <nav class="tab-bar">
   <button class="tab-btn active" data-tab="lifts">
-    <span class="tab-icon">◆</span>
+    <span class="tab-icon">&#x25C6;</span>
     Lifts
   </button>
   <button class="tab-btn" data-tab="weather">
-    <span class="tab-icon">※</span>
+    <span class="tab-icon">&#x203B;</span>
     Weather
   </button>
   <button class="tab-btn" data-tab="trail">
-    <span class="tab-icon">🗺</span>
+    <span class="tab-icon">&#x1F5FA;</span>
     Trail
   </button>
   <button class="tab-btn" data-tab="map">
-    <span class="tab-icon">▲</span>
+    <span class="tab-icon">&#x25B2;</span>
     Map
+  </button>
+  <button class="tab-btn" data-tab="settings">
+    <span class="tab-icon">&#x2699;</span>
+    Settings
   </button>
 </nav>
 

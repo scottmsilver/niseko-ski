@@ -1,5 +1,7 @@
 package com.jpski.niseko.ui.trail
 
+import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -18,22 +20,31 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
-import androidx.compose.ui.unit.sp
-import com.jpski.niseko.ui.theme.NisekoBg
-import com.jpski.niseko.ui.theme.NisekoTextDim
+import com.jpski.niseko.ui.theme.NisekoTheme
+import com.jpski.niseko.ui.theme.scaledSp
 
 @Composable
 fun TrailMapScreen() {
     val context = LocalContext.current
-    val bitmap = remember {
-        context.assets.open("trail-map.jpg").use { stream ->
-            BitmapFactory.decodeStream(stream)?.asImageBitmap()
+    val colors = NisekoTheme.colors
+    val prefs = remember { context.getSharedPreferences("niseko_map_state", Context.MODE_PRIVATE) }
+    val bitmapPair = remember {
+        val androidBitmap: Bitmap? = context.assets.open("trail-map.jpg").use { stream ->
+            BitmapFactory.decodeStream(stream)
+        }
+        androidBitmap to androidBitmap?.asImageBitmap()
+    }
+    val (androidBitmap, bitmap) = bitmapPair
+
+    DisposableEffect(Unit) {
+        onDispose {
+            androidBitmap?.recycle()
         }
     }
 
     if (bitmap == null) {
-        Box(Modifier.fillMaxSize().background(NisekoBg), contentAlignment = Alignment.Center) {
-            Text("Failed to load trail map", color = NisekoTextDim, fontSize = 13.sp)
+        Box(Modifier.fillMaxSize().background(colors.bg), contentAlignment = Alignment.Center) {
+            Text("Failed to load trail map", color = colors.textDim, fontSize = 13.scaledSp)
         }
         return
     }
@@ -43,6 +54,14 @@ fun TrailMapScreen() {
     var offsetY by remember { mutableFloatStateOf(0f) }
     var containerSize by remember { mutableStateOf(IntSize.Zero) }
     var fitted by remember { mutableStateOf(false) }
+
+    fun saveTrailState() {
+        prefs.edit()
+            .putFloat("trail_scale", scale)
+            .putFloat("trail_offset_x", offsetX)
+            .putFloat("trail_offset_y", offsetY)
+            .apply()
+    }
 
     val minScale = remember(containerSize, bitmap) {
         if (containerSize.width == 0 || containerSize.height == 0) 0.5f
@@ -57,16 +76,23 @@ fun TrailMapScreen() {
     Canvas(
         modifier = Modifier
             .fillMaxSize()
-            .background(NisekoBg)
+            .background(colors.bg)
             .onSizeChanged { size ->
                 containerSize = size
                 if (!fitted) {
                     fitted = true
-                    val scaleX = size.width.toFloat() / bitmap.width
-                    val scaleY = size.height.toFloat() / bitmap.height
-                    scale = minOf(scaleX, scaleY)
-                    offsetX = (size.width - bitmap.width * scale) / 2f
-                    offsetY = (size.height - bitmap.height * scale) / 2f
+                    val savedScale = prefs.getFloat("trail_scale", 0f)
+                    if (savedScale > 0f) {
+                        scale = savedScale
+                        offsetX = prefs.getFloat("trail_offset_x", 0f)
+                        offsetY = prefs.getFloat("trail_offset_y", 0f)
+                    } else {
+                        val scaleX = size.width.toFloat() / bitmap.width
+                        val scaleY = size.height.toFloat() / bitmap.height
+                        scale = minOf(scaleX, scaleY)
+                        offsetX = (size.width - bitmap.width * scale) / 2f
+                        offsetY = (size.height - bitmap.height * scale) / 2f
+                    }
                 }
             }
             .pointerInput(Unit) {
@@ -76,6 +102,7 @@ fun TrailMapScreen() {
                     offsetX = centroid.x - (centroid.x - offsetX) * ratio + pan.x
                     offsetY = centroid.y - (centroid.y - offsetY) * ratio + pan.y
                     scale = newScale
+                    saveTrailState()
                 }
             }
             .pointerInput(Unit) {
@@ -86,6 +113,7 @@ fun TrailMapScreen() {
                         offsetX = tap.x - (tap.x - offsetX) * ratio
                         offsetY = tap.y - (tap.y - offsetY) * ratio
                         scale = newScale
+                        saveTrailState()
                     },
                 )
             },

@@ -17,6 +17,9 @@ import com.jpski.niseko.data.*
 import com.jpski.niseko.ui.theme.*
 import com.jpski.niseko.util.TimeUtils
 
+private val SUMMIT_REGEX = Regex("top|peak|summit", RegexOption.IGNORE_CASE)
+private val BASE_REGEX = Regex("base|foot", RegexOption.IGNORE_CASE)
+
 @Composable
 fun WeatherScreen(data: Map<String, ResortData>) {
     LazyColumn(
@@ -35,30 +38,32 @@ fun WeatherScreen(data: Map<String, ResortData>) {
 
 @Composable
 private fun WeatherCard(resort: Resort, stations: List<WeatherStation>?) {
+    val colors = NisekoTheme.colors
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
-            .background(NisekoCard)
+            .background(colors.card)
             .padding(14.dp),
     ) {
         Text(
             resort.name,
-            color = NisekoPink,
-            fontSize = 15.sp,
+            color = colors.accent,
+            fontSize = 15.scaledSp,
             fontWeight = FontWeight.SemiBold,
             modifier = Modifier.padding(bottom = 10.dp),
         )
 
         if (stations.isNullOrEmpty()) {
-            Text("No data", color = NisekoTextDim, fontSize = 13.sp)
+            Text("No data", color = colors.textDim, fontSize = 13.scaledSp)
             return@Column
         }
 
-        val summit = stations.find { it.name.contains(Regex("top|peak|summit", RegexOption.IGNORE_CASE)) }
-            ?: stations.first()
-        val base = stations.find { it.name.contains(Regex("base|foot", RegexOption.IGNORE_CASE)) }
-            ?: stations.last()
+        val summit = stations.find { it.name.contains(SUMMIT_REGEX) }
+            ?: stations.firstOrNull() ?: return@Column
+        val base = stations.find { it.name.contains(BASE_REGEX) }
+            ?: stations.lastOrNull() ?: return@Column
 
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -72,11 +77,13 @@ private fun WeatherCard(resort: Resort, stations: List<WeatherStation>?) {
 
 @Composable
 private fun StationColumn(label: String, station: WeatherStation, modifier: Modifier = Modifier) {
+    val colors = NisekoTheme.colors
+
     Column(modifier = modifier) {
         Text(
             label,
-            color = NisekoPurple,
-            fontSize = 11.sp,
+            color = colors.accentSecondary,
+            fontSize = 11.scaledSp,
             fontWeight = FontWeight.SemiBold,
             letterSpacing = 0.5.sp,
             modifier = Modifier.padding(bottom = 6.dp),
@@ -84,15 +91,15 @@ private fun StationColumn(label: String, station: WeatherStation, modifier: Modi
 
         Text(
             "${TimeUtils.cToF(station.temperature)}°F",
-            color = NisekoTeal,
-            fontSize = 26.sp,
+            color = colors.accentTertiary,
+            fontSize = 26.scaledSp,
             fontWeight = FontWeight.Bold,
         )
 
         Text(
             "${wxIcon(station.weather)} ${station.weather}",
-            color = NisekoTextDim,
-            fontSize = 13.sp,
+            color = colors.textDim,
+            fontSize = 13.scaledSp,
             modifier = Modifier.padding(bottom = 6.dp),
         )
 
@@ -108,14 +115,16 @@ private fun StationColumn(label: String, station: WeatherStation, modifier: Modi
 
 @Composable
 private fun WxRow(label: String, value: String) {
+    val colors = NisekoTheme.colors
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 2.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        Text(label, color = NisekoTextDim, fontSize = 13.sp)
-        Text(value, color = NisekoText, fontSize = 13.sp, textAlign = TextAlign.End)
+        Text(label, color = colors.textDim, fontSize = 13.scaledSp)
+        Text(value, color = colors.text, fontSize = 13.scaledSp, textAlign = TextAlign.End)
     }
 }
 

@@ -1,5 +1,6 @@
 package com.jpski.niseko.data
 
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -10,14 +11,16 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 class NisekoApi {
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .build()
-
     companion object {
+        private const val TAG = "NisekoApi"
         private const val API_BASE = "https://web-api.yukiyama.biz/web-api"
         private const val REFERER = "https://www.niseko.ne.jp/"
+
+        private val client = OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .writeTimeout(15, TimeUnit.SECONDS)
+            .build()
     }
 
     // Japanese to English translations for weather
@@ -38,10 +41,14 @@ class NisekoApi {
             .build()
         return try {
             client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return null
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "HTTP ${response.code} for $url")
+                    return null
+                }
                 JSONObject(response.body?.string() ?: return null)
             }
         } catch (e: Exception) {
+            Log.e(TAG, "fetchJson failed for $url", e)
             null
         }
     }
@@ -61,16 +68,21 @@ class NisekoApi {
         val json = fetchJson("$API_BASE/latest-facility/backward?facilityType=lift&lang=en&skiareaId=$resortId")
             ?: return null
         val results = json.optJSONArray("results") ?: return emptyList()
-        return (0 until results.length()).map { i ->
-            val obj = results.getJSONObject(i)
-            LiftInfo(
-                id = obj.optInt("id"),
-                name = obj.optString("name", ""),
-                status = obj.optString("status", "CLOSED"),
-                startTime = obj.optString("start_time", "08:00"),
-                endTime = obj.optString("end_time", "16:00"),
-                updateDate = obj.optString("updateDate", null),
-            )
+        return try {
+            (0 until results.length()).map { i ->
+                val obj = results.getJSONObject(i)
+                LiftInfo(
+                    id = obj.optInt("id"),
+                    name = obj.optString("name", ""),
+                    status = obj.optString("status", "CLOSED"),
+                    startTime = obj.optString("start_time", "08:00"),
+                    endTime = obj.optString("end_time", "16:00"),
+                    updateDate = obj.optString("updateDate", null),
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse lifts for $resortId", e)
+            null
         }
     }
 
@@ -78,18 +90,23 @@ class NisekoApi {
         val json = fetchJson("$API_BASE/latest-weather/backward?lang=en&skiareaId=$resortId")
             ?: return null
         val results = json.optJSONArray("results") ?: return emptyList()
-        return (0 until results.length()).map { i ->
-            val obj = results.getJSONObject(i)
-            WeatherStation(
-                name = obj.optString("name", ""),
-                temperature = obj.optDouble("temperature", 0.0),
-                weather = translate(obj.optString("weather", "")),
-                snowAccumulation = obj.optDouble("snow_accumulation", 0.0),
-                snowAccumulationDiff = if (obj.has("snow_accumulation_difference")) obj.optDouble("snow_accumulation_difference") else null,
-                snowState = translate(obj.optString("snow_state", "")),
-                windSpeed = obj.optString("wind_speed", "—"),
-                courseState = translate(obj.optString("cource_state", "")),
-            )
+        return try {
+            (0 until results.length()).map { i ->
+                val obj = results.getJSONObject(i)
+                WeatherStation(
+                    name = obj.optString("name", ""),
+                    temperature = obj.optDouble("temperature", 0.0),
+                    weather = translate(obj.optString("weather", "")),
+                    snowAccumulation = obj.optDouble("snow_accumulation", 0.0),
+                    snowAccumulationDiff = if (obj.has("snow_accumulation_difference")) obj.optDouble("snow_accumulation_difference") else null,
+                    snowState = translate(obj.optString("snow_state", "")),
+                    windSpeed = obj.optString("wind_speed", "—"),
+                    courseState = translate(obj.optString("cource_state", "")),
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse weather for $resortId", e)
+            null
         }
     }
 }

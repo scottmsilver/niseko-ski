@@ -2,18 +2,29 @@
 let LIFT_GEOJSON, RUN_GEOJSON;
 
 async function loadGeoJSON() {
-  const [lifts, runs] = await Promise.all([
-    fetch('data/lifts.geojson').then(r => r.json()),
-    fetch('data/runs.geojson').then(r => r.json()),
-  ]);
-  LIFT_GEOJSON = lifts;
-  RUN_GEOJSON = runs;
+  try {
+    const [liftsRes, runsRes] = await Promise.all([
+      fetch('data/lifts.geojson'),
+      fetch('data/runs.geojson'),
+    ]);
+    if (!liftsRes.ok || !runsRes.ok) throw new Error('GeoJSON fetch failed');
+    LIFT_GEOJSON = await liftsRes.json();
+    RUN_GEOJSON = await runsRes.json();
+  } catch (e) {
+    console.error('Failed to load GeoJSON:', e);
+    LIFT_GEOJSON = { type: 'FeatureCollection', features: [] };
+    RUN_GEOJSON = { type: 'FeatureCollection', features: [] };
+  }
 }
 
 const API_BASE = 'https://web-api.yukiyama.biz/web-api';
 const REFERER = 'https://www.niseko.ne.jp/';
 const REFRESH_INTERVAL_MS = 120000;
 const CHANGE_WINDOW_MS = 600000;
+const CHANGE_HIGHLIGHT_MS = 30000;
+const WHEEL_ZOOM_IN = 1.15;
+const WHEEL_ZOOM_OUT = 0.87;
+const KM_PER_DEGREE = 111;
 
 const RESORTS = [
   { id: '379', name: 'Hanazono' },
@@ -24,10 +35,96 @@ const RESORTS = [
 
 let previousData = {};
 let latestData = {};
+let lastRenderedHash = '';
 let changeLog = [];
 let refreshTimer = null;
 let fetchCount = 0;
 
+// --- Theme & Font Settings ---
+const THEMES = [
+  { name: 'light', label: 'Light', bg: '#f5f5f7', accent: '#e85d75' },
+  { name: 'dark', label: 'Dark', bg: '#1a1a2e', accent: '#ff6b9d' },
+  { name: 'powder', label: 'Powder', bg: '#0b1628', accent: '#5cb8ff' },
+  { name: 'sakura', label: 'Sakura', bg: '#1e0a14', accent: '#ff85a2' },
+  { name: 'sunset', label: 'Sunset', bg: '#1a0f05', accent: '#ff8c42' },
+];
+
+const FONT_SCALES = [
+  { label: 'Default', scale: 1 },
+  { label: 'Large', scale: 1.15 },
+  { label: 'Extra Large', scale: 1.3 },
+  { label: 'Huge', scale: 1.5 },
+];
+
+let currentTheme = localStorage.getItem('niseko-theme') || 'light';
+let currentFontScale = parseFloat(localStorage.getItem('niseko-font-scale')) || 1;
+
+function applyTheme(name) {
+  currentTheme = name;
+  if (name === 'light') {
+    document.documentElement.removeAttribute('data-theme');
+  } else {
+    document.documentElement.setAttribute('data-theme', name);
+  }
+  localStorage.setItem('niseko-theme', name);
+
+  // Update meta theme-color
+  const theme = THEMES.find(t => t.name === name);
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta && theme) meta.content = theme.bg;
+}
+
+function applyFontScale(scale) {
+  currentFontScale = scale;
+  document.documentElement.style.setProperty('--font-scale', scale);
+  localStorage.setItem('niseko-font-scale', String(scale));
+}
+
+function renderSettings() {
+  const picker = document.getElementById('theme-picker');
+  picker.innerHTML = '';
+  THEMES.forEach(t => {
+    const swatch = document.createElement('div');
+    swatch.className = 'theme-swatch' + (currentTheme === t.name ? ' selected' : '');
+    swatch.dataset.theme = t.name;
+
+    const circle = document.createElement('div');
+    circle.className = 'swatch-circle';
+    circle.style.background = t.bg;
+    const dot = document.createElement('div');
+    dot.className = 'swatch-dot';
+    dot.style.background = t.accent;
+    circle.appendChild(dot);
+
+    const label = document.createElement('span');
+    label.className = 'swatch-label';
+    label.textContent = t.label;
+
+    swatch.appendChild(circle);
+    swatch.appendChild(label);
+    swatch.addEventListener('click', () => {
+      applyTheme(t.name);
+      renderSettings();
+    });
+    picker.appendChild(swatch);
+  });
+
+  const fontContainer = document.getElementById('font-options');
+  fontContainer.innerHTML = '';
+  FONT_SCALES.forEach(f => {
+    const opt = document.createElement('div');
+    opt.className = 'font-option' + (currentFontScale === f.scale ? ' selected' : '');
+    opt.dataset.scale = f.scale;
+    opt.textContent = f.label;
+    opt.addEventListener('click', () => {
+      applyFontScale(f.scale);
+      renderSettings();
+    });
+    fontContainer.appendChild(opt);
+  });
+}
+
+// --- Tab Switching ---
 let mapInit = false;
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => {
@@ -80,17 +177,42 @@ function initTrailMap() {
     ty = cy - (cy - ty) * ratio;
     scale = newScale;
     applyTransform();
+    saveTrailState();
+  }
+
+  function saveTrailState() {
+    localStorage.setItem('niseko-trail-state', JSON.stringify({ scale, tx, ty }));
+  }
+
+  function loadTrailState() {
+    try {
+      const saved = JSON.parse(localStorage.getItem('niseko-trail-state'));
+      if (saved && saved.scale > 0) return saved;
+    } catch (e) {}
+    return null;
   }
 
   img.src = 'trail-map.jpg';
-  img.onload = () => { loading.style.display = 'none'; fitToContainer(); };
+  img.onload = () => {
+    loading.style.display = 'none';
+    const saved = loadTrailState();
+    if (saved) {
+      scale = saved.scale;
+      tx = saved.tx;
+      ty = saved.ty;
+      minScale = Math.min(container.clientWidth / img.naturalWidth, container.clientHeight / img.naturalHeight) * 0.5;
+      applyTransform();
+    } else {
+      fitToContainer();
+    }
+  };
   img.onerror = () => { loading.textContent = 'Failed to load trail map'; };
 
   // Mouse wheel zoom
   container.addEventListener('wheel', e => {
     e.preventDefault();
     const rect = container.getBoundingClientRect();
-    zoomAt(e.clientX - rect.left, e.clientY - rect.top, e.deltaY < 0 ? 1.15 : 0.87);
+    zoomAt(e.clientX - rect.left, e.clientY - rect.top, e.deltaY < 0 ? WHEEL_ZOOM_IN : WHEEL_ZOOM_OUT);
   }, { passive: false });
 
   // Mouse drag
@@ -104,7 +226,7 @@ function initTrailMap() {
     ty = startTy + (e.clientY - startY);
     applyTransform();
   });
-  window.addEventListener('mouseup', () => { isDragging = false; });
+  window.addEventListener('mouseup', () => { if (isDragging) saveTrailState(); isDragging = false; });
 
   // Touch pinch-zoom & pan
   function touchDist(t) {
@@ -148,7 +270,7 @@ function initTrailMap() {
 
   container.addEventListener('touchend', e => {
     if (e.touches.length < 2) { lastTouchDist = 0; lastTouchMid = null; }
-    if (e.touches.length === 0) isDragging = false;
+    if (e.touches.length === 0) { isDragging = false; saveTrailState(); }
   });
 
   // Double-tap to zoom in
@@ -215,7 +337,7 @@ const LIFT_NAME_MAP = {
 // Add English names and filter to only known lifts (initialized after GeoJSON loads)
 let LIFT_DATA = null;
 function initLiftData() {
-  LIFT_DATA = JSON.parse(JSON.stringify(LIFT_GEOJSON));
+  LIFT_DATA = structuredClone(LIFT_GEOJSON);
   LIFT_DATA.features = LIFT_DATA.features
     .filter(f => LIFT_NAME_MAP[f.properties.name])
     .map(f => { f.properties.en_name = LIFT_NAME_MAP[f.properties.name]; return f; });
@@ -251,8 +373,8 @@ function liftCenter() {
   });
   // Span in km
   const cosLat = Math.cos(((minLat + maxLat) / 2) * Math.PI / 180);
-  const spanKmX = (maxLng - minLng) * 111 * cosLat;
-  const spanKmY = (maxLat - minLat) * 111;
+  const spanKmX = (maxLng - minLng) * KM_PER_DEGREE * cosLat;
+  const spanKmY = (maxLat - minLat) * KM_PER_DEGREE;
   const spanKm = Math.max(spanKmX, spanKmY);
   // Zoom: at z13 ≈ 5km across, each +1 halves it. +0.8 to crop sides
   const zoom = Math.log2(5 / spanKm) + 13 + 0.8;
@@ -347,6 +469,7 @@ function drawRelief(ctx, elev, w, h) {
 maplibregl.addProtocol('pencil', async (params) => {
   const url = params.url.replace('pencil://', 'https://');
   const res = await fetch(url);
+  if (!res.ok) throw new Error(`DEM tile fetch failed: ${res.status}`);
   const blob = await res.blob();
   const bmp = await createImageBitmap(blob);
   const c = document.createElement('canvas');
@@ -366,7 +489,16 @@ maplibregl.addProtocol('pencil', async (params) => {
   return { data };
 });
 
+function loadMapState() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('niseko-map-state'));
+    if (saved && saved.center) return saved;
+  } catch (e) {}
+  return null;
+}
+
 function initMap() {
+  const savedMap = loadMapState();
   const map = new maplibregl.Map({
     container: 'map',
     style: {
@@ -392,10 +524,10 @@ function initMap() {
         }
       }]
     },
-    center: [140.6777, 42.8593],
-    zoom: 13.28,
-    pitch: 35,
-    bearing: -40
+    center: savedMap ? savedMap.center : [140.6777, 42.8593],
+    zoom: savedMap ? savedMap.zoom : 13.28,
+    pitch: savedMap ? savedMap.pitch : 35,
+    bearing: savedMap ? savedMap.bearing : -40
   });
 
   mapRef = map;
@@ -454,6 +586,17 @@ function initMap() {
 
     // Update colors if data already loaded
     updateMapLifts();
+  });
+
+  // Save map position on move
+  map.on('moveend', () => {
+    const c = map.getCenter();
+    localStorage.setItem('niseko-map-state', JSON.stringify({
+      center: [c.lng, c.lat],
+      zoom: map.getZoom(),
+      pitch: map.getPitch(),
+      bearing: map.getBearing(),
+    }));
   });
 
   // Position readout
@@ -533,6 +676,17 @@ function cToF(c) { return Math.round(c * 9 / 5 + 32); }
 function cmToIn(cm) { return Math.round(cm / 2.54); }
 
 
+function dataHash(data) {
+  const parts = [];
+  for (const r of RESORTS) {
+    const rd = data[r.id];
+    if (!rd) continue;
+    if (rd.lifts) rd.lifts.forEach(l => parts.push(l.id + ':' + l.status));
+    if (rd.weather) rd.weather.forEach(w => parts.push(w.name + ':' + w.temperature + ':' + w.snow_accumulation));
+  }
+  return parts.join('|');
+}
+
 async function fetchJSON(url) {
   const res = await fetch(url, { headers: { 'accept': '*/*', 'Referer': REFERER } });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -581,11 +735,19 @@ function renderChanges() {
   const list = document.getElementById('changes-list');
   if (changeLog.length === 0) { banner.classList.remove('visible'); return; }
   banner.classList.add('visible');
-  list.innerHTML = changeLog.slice().reverse().map(c => {
+  list.innerHTML = '';
+  changeLog.slice().reverse().forEach(c => {
     const ago = Math.round((Date.now() - c.time) / 60000);
     const timeStr = ago < 1 ? 'just now' : `${ago}m ago`;
-    return `<div class="change-item"><span class="time">${timeStr}</span>${c.resort} \u2013 ${c.lift}: ${c.from} \u2192 ${c.to}</div>`;
-  }).join('');
+    const item = document.createElement('div');
+    item.className = 'change-item';
+    const time = document.createElement('span');
+    time.className = 'time';
+    time.textContent = timeStr;
+    item.appendChild(time);
+    item.appendChild(document.createTextNode(`${c.resort} \u2013 ${c.lift}: ${c.from} \u2192 ${c.to}`));
+    list.appendChild(item);
+  });
 }
 
 function wxIcon(weather) {
@@ -609,56 +771,155 @@ function tr(s) { return s ? (JP_EN[s] || s) : '—'; }
 
 function renderWeather(data) {
   const container = document.getElementById('weather-content');
-  container.innerHTML = `<div class="weather-grid">${RESORTS.map(r => {
+  const grid = document.createElement('div');
+  grid.className = 'weather-grid';
+
+  function createWxRow(labelText, valueText) {
+    const row = document.createElement('div');
+    row.className = 'wx-row';
+    const lbl = document.createElement('span');
+    lbl.className = 'wx-label';
+    lbl.textContent = labelText;
+    const val = document.createElement('span');
+    val.className = 'wx-val';
+    val.textContent = valueText;
+    row.appendChild(lbl);
+    row.appendChild(val);
+    return row;
+  }
+
+  function createStation(label, s) {
+    const station = document.createElement('div');
+    station.className = 'wx-station';
+    const h4 = document.createElement('h4');
+    h4.textContent = label;
+    const temp = document.createElement('div');
+    temp.className = 'wx-temp';
+    temp.textContent = `${cToF(s.temperature)}\u00B0F`;
+    const cond = document.createElement('div');
+    cond.className = 'wx-condition';
+    cond.textContent = `${wxIcon(tr(s.weather))} ${tr(s.weather)}`;
+    station.appendChild(h4);
+    station.appendChild(temp);
+    station.appendChild(cond);
+    station.appendChild(createWxRow('Snow', `${cmToIn(s.snow_accumulation)}" (${s.snow_accumulation}cm)`));
+    station.appendChild(createWxRow('24h New', s.snow_accumulation_difference != null ? `${cmToIn(s.snow_accumulation_difference)}" (${s.snow_accumulation_difference}cm)` : '\u2014'));
+    station.appendChild(createWxRow('Condition', tr(s.snow_state)));
+    station.appendChild(createWxRow('Wind', s.wind_speed || '\u2014'));
+    station.appendChild(createWxRow('Courses', tr(s.cource_state)));
+    return station;
+  }
+
+  RESORTS.forEach(r => {
+    const card = document.createElement('div');
+    card.className = 'weather-card';
+    const h3 = document.createElement('h3');
+    h3.textContent = r.name;
+    card.appendChild(h3);
+
     const wd = data[r.id]?.weather;
-    if (!wd || wd.length === 0) return `<div class="weather-card"><h3>${r.name}</h3><p style="color:var(--text-dim)">No data</p></div>`;
-    const top = wd.find(w => /top|peak|summit/i.test(w.name)) || wd[0];
-    const base = wd.find(w => /base|foot/i.test(w.name)) || wd[wd.length - 1];
-    function stationHTML(label, s) {
-      return `<div class="wx-station">
-        <h4>${label}</h4>
-        <div class="wx-temp">${cToF(s.temperature)}\u00B0F</div>
-        <div class="wx-condition">${wxIcon(tr(s.weather))} ${tr(s.weather)}</div>
-        <div class="wx-row"><span class="wx-label">Snow</span><span class="wx-val">${cmToIn(s.snow_accumulation)}" (${s.snow_accumulation}cm)</span></div>
-        <div class="wx-row"><span class="wx-label">24h New</span><span class="wx-val">${s.snow_accumulation_difference != null ? `${cmToIn(s.snow_accumulation_difference)}" (${s.snow_accumulation_difference}cm)` : '—'}</span></div>
-        <div class="wx-row"><span class="wx-label">Condition</span><span class="wx-val">${tr(s.snow_state)}</span></div>
-        <div class="wx-row"><span class="wx-label">Wind</span><span class="wx-val">${s.wind_speed || '—'}</span></div>
-        <div class="wx-row"><span class="wx-label">Courses</span><span class="wx-val">${tr(s.cource_state)}</span></div>
-      </div>`;
+    if (!wd || wd.length === 0) {
+      const p = document.createElement('p');
+      p.style.color = 'var(--text-dim)';
+      p.textContent = 'No data';
+      card.appendChild(p);
+    } else {
+      const top = wd.find(w => /top|peak|summit/i.test(w.name)) || wd[0];
+      const base = wd.find(w => /base|foot/i.test(w.name)) || wd[wd.length - 1];
+      const stations = document.createElement('div');
+      stations.className = 'wx-stations';
+      stations.appendChild(createStation('Summit', top));
+      stations.appendChild(createStation('Base', base));
+      card.appendChild(stations);
     }
-    return `<div class="weather-card">
-      <h3>${r.name}</h3>
-      <div class="wx-stations">${stationHTML('Summit', top)}${stationHTML('Base', base)}</div>
-    </div>`;
-  }).join('')}</div>`;
+    grid.appendChild(card);
+  });
+
+  container.innerHTML = '';
+  container.appendChild(grid);
 }
 
 function renderLifts(data) {
   const content = document.getElementById('lifts-content');
-  const resortHTML = RESORTS.map(r => {
+  const resorts = document.createElement('div');
+  resorts.className = 'resorts';
+
+  RESORTS.forEach(r => {
+    const card = document.createElement('div');
+    card.className = 'resort-card';
+
     const rd = data[r.id];
-    if (!rd || !rd.lifts) return `<div class="resort-card"><div class="resort-header"><h2>${r.name}</h2><span class="resort-stats">Error</span></div></div>`;
+    if (!rd || !rd.lifts) {
+      const header = document.createElement('div');
+      header.className = 'resort-header';
+      const h2 = document.createElement('h2');
+      h2.textContent = r.name;
+      const stats = document.createElement('span');
+      stats.className = 'resort-stats';
+      stats.textContent = 'Error';
+      header.appendChild(h2);
+      header.appendChild(stats);
+      card.appendChild(header);
+      resorts.appendChild(card);
+      return;
+    }
+
     const lifts = [...rd.lifts].sort((a, b) => a.name.localeCompare(b.name));
     const open = lifts.filter(l => isRunning(l.status)).length;
     const updated = latestUpdateDate(lifts);
     const agoText = updated ? timeAgo(updated) : '';
-    const liftRows = lifts.map(l => {
+
+    const header = document.createElement('div');
+    header.className = 'resort-header';
+    const h2 = document.createElement('h2');
+    h2.textContent = r.name;
+    if (agoText) {
+      const updSpan = document.createElement('span');
+      updSpan.className = 'resort-updated';
+      updSpan.textContent = agoText;
+      h2.appendChild(updSpan);
+    }
+    const stats = document.createElement('span');
+    stats.className = 'resort-stats';
+    const openCount = document.createElement('span');
+    openCount.className = 'open-count';
+    openCount.textContent = open;
+    stats.appendChild(openCount);
+    stats.appendChild(document.createTextNode(` / ${lifts.length}`));
+    header.appendChild(h2);
+    header.appendChild(stats);
+    card.appendChild(header);
+
+    const liftList = document.createElement('div');
+    liftList.className = 'lift-list';
+    lifts.forEach(l => {
       const cls = statusClass(l.status);
-      const changed = changeLog.some(c => c.lift === l.name && (Date.now() - c.time) < 30000);
-      return `<div class="lift-row${changed ? ' changed' : ''}">
-        <div class="lift-info">
-          <div class="lift-name">${l.name}</div>
-          <div class="lift-detail">${liftTimeLabel(l.start_time, l.end_time)}</div>
-        </div>
-        <div class="lift-status-text ${cls}">${statusLabel(l.status)}</div>
-      </div>`;
-    }).join('');
-    return `<div class="resort-card">
-      <div class="resort-header"><h2>${r.name}${agoText ? `<span class="resort-updated">${agoText}</span>` : ''}</h2><span class="resort-stats"><span class="open-count">${open}</span> / ${lifts.length}</span></div>
-      <div class="lift-list">${liftRows}</div>
-    </div>`;
-  }).join('');
-  content.innerHTML = `<div class="resorts">${resortHTML}</div>`;
+      const changed = changeLog.some(c => c.lift === l.name && (Date.now() - c.time) < CHANGE_HIGHLIGHT_MS);
+      const row = document.createElement('div');
+      row.className = 'lift-row' + (changed ? ' changed' : '');
+      const info = document.createElement('div');
+      info.className = 'lift-info';
+      const name = document.createElement('div');
+      name.className = 'lift-name';
+      name.textContent = l.name;
+      const detail = document.createElement('div');
+      detail.className = 'lift-detail';
+      detail.textContent = liftTimeLabel(l.start_time, l.end_time);
+      info.appendChild(name);
+      info.appendChild(detail);
+      const statusText = document.createElement('div');
+      statusText.className = 'lift-status-text ' + cls;
+      statusText.textContent = statusLabel(l.status);
+      row.appendChild(info);
+      row.appendChild(statusText);
+      liftList.appendChild(row);
+    });
+    card.appendChild(liftList);
+    resorts.appendChild(card);
+  });
+
+  content.innerHTML = '';
+  content.appendChild(resorts);
 
   const allLifts = RESORTS.flatMap(r => data[r.id]?.lifts || []);
   const grouped = {};
@@ -668,15 +929,30 @@ function renderLifts(data) {
   }
   const summaryOrder = ['operating', 'slowed', 'standby', 'on-hold', 'closed'];
   const summaryBar = document.getElementById('summary-bar');
-  const chips = [];
+  summaryBar.innerHTML = '';
   for (const css of summaryOrder) {
     const count = grouped[css] || 0;
     if (count === 0 && css !== 'operating' && css !== 'on-hold') continue;
     const entry = Object.values(STATUS_INFO).find(s => s.css === css) || DEFAULT_STATUS_INFO;
-    chips.push(`<div class="summary-chip"><span class="count" style="color:${entry.color}">${count}</span>${entry.label}</div>`);
+    const chip = document.createElement('div');
+    chip.className = 'summary-chip';
+    const countSpan = document.createElement('span');
+    countSpan.className = 'count';
+    countSpan.style.color = entry.color;
+    countSpan.textContent = count;
+    chip.appendChild(countSpan);
+    chip.appendChild(document.createTextNode(entry.label));
+    summaryBar.appendChild(chip);
   }
-  chips.push(`<div class="summary-chip"><span class="count" style="color:var(--text)">${allLifts.length}</span>Total</div>`);
-  summaryBar.innerHTML = chips.join('');
+  const totalChip = document.createElement('div');
+  totalChip.className = 'summary-chip';
+  const totalCount = document.createElement('span');
+  totalCount.className = 'count';
+  totalCount.style.color = 'var(--text)';
+  totalCount.textContent = allLifts.length;
+  totalChip.appendChild(totalCount);
+  totalChip.appendChild(document.createTextNode('Total'));
+  summaryBar.appendChild(totalChip);
 }
 
 function updateMeta(error) {
@@ -698,15 +974,20 @@ async function refresh() {
     if (fetchCount > 1) detectChanges(data);
     previousData = data;
     latestData = data;
-    renderLifts(data);
-    renderWeather(data);
-    renderChanges();
-    updateMapLifts();
+    const hash = dataHash(data);
+    if (hash !== lastRenderedHash || changeLog.length > 0) {
+      lastRenderedHash = hash;
+      renderLifts(data);
+      renderWeather(data);
+      renderChanges();
+      updateMapLifts();
+    }
     updateMeta(false);
     errorBanner.classList.remove('visible');
   } catch (e) {
     updateMeta(true);
-    errorBanner.textContent = `Failed: ${e.message}`;
+    console.error('Refresh failed:', e);
+    errorBanner.textContent = 'Unable to update lift data. Will retry shortly.';
     errorBanner.classList.add('visible');
   }
   refreshTimer = setTimeout(refresh, REFRESH_INTERVAL_MS);
@@ -715,6 +996,7 @@ async function refresh() {
 async function init() {
   await loadGeoJSON();
   initLiftData();
+  renderSettings();
   refresh();
 }
 

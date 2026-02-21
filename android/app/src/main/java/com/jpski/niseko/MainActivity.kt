@@ -14,16 +14,18 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.jpski.niseko.data.SettingsRepository
 import com.jpski.niseko.ui.lifts.LiftsScreen
 import com.jpski.niseko.ui.map.MapScreen
+import com.jpski.niseko.ui.settings.SettingsScreen
 import com.jpski.niseko.ui.theme.*
 import com.jpski.niseko.ui.trail.TrailMapScreen
 import com.jpski.niseko.ui.weather.WeatherScreen
@@ -31,10 +33,30 @@ import com.jpski.niseko.ui.weather.WeatherScreen
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val settingsRepo = SettingsRepository(this)
         enableEdgeToEdge()
         setContent {
-            NisekoTheme {
-                NisekoApp()
+            var themeOption by remember {
+                mutableStateOf(
+                    NisekoThemeOption.entries.find { it.name == settingsRepo.themeName }
+                        ?: NisekoThemeOption.LIGHT
+                )
+            }
+            var fontScale by remember { mutableFloatStateOf(settingsRepo.fontScale) }
+
+            NisekoTheme(themeOption = themeOption, fontScale = fontScale) {
+                NisekoApp(
+                    themeOption = themeOption,
+                    fontScale = fontScale,
+                    onThemeSelected = {
+                        themeOption = it
+                        settingsRepo.themeName = it.name
+                    },
+                    onFontScaleSelected = {
+                        fontScale = it
+                        settingsRepo.fontScale = it
+                    },
+                )
             }
         }
     }
@@ -45,13 +67,21 @@ enum class Tab(val label: String, val icon: String) {
     WEATHER("Weather", "\u203B"),
     MAP("Map", "\u25B2"),
     TRAIL("Trail", "\uD83D\uDDFA"),
+    SETTINGS("Settings", "\u2699"),
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun NisekoApp(viewModel: MainViewModel = viewModel()) {
+fun NisekoApp(
+    viewModel: MainViewModel = viewModel(),
+    themeOption: NisekoThemeOption = NisekoThemeOption.LIGHT,
+    fontScale: Float = 1f,
+    onThemeSelected: (NisekoThemeOption) -> Unit = {},
+    onFontScaleSelected: (Float) -> Unit = {},
+) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var selectedTab by remember { mutableStateOf(Tab.LIFTS) }
+    val colors = NisekoTheme.colors
 
     Scaffold(
         topBar = {
@@ -60,7 +90,7 @@ fun NisekoApp(viewModel: MainViewModel = viewModel()) {
         bottomBar = {
             NisekoBottomBar(selectedTab) { selectedTab = it }
         },
-        containerColor = NisekoBg,
+        containerColor = colors.bg,
     ) { padding ->
         Box(
             modifier = Modifier
@@ -68,9 +98,8 @@ fun NisekoApp(viewModel: MainViewModel = viewModel()) {
                 .padding(padding),
         ) {
             if (uiState.isLoading && uiState.data.isEmpty()) {
-                // Loading spinner
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = NisekoPink)
+                    CircularProgressIndicator(color = colors.accent)
                 }
             } else {
                 when (selectedTab) {
@@ -86,7 +115,7 @@ fun NisekoApp(viewModel: MainViewModel = viewModel()) {
                         }
                         Box(Modifier.fillMaxSize().nestedScroll(pullState.nestedScrollConnection)) {
                             LiftsScreen(uiState.data, uiState.changes)
-                            PullToRefreshContainer(state = pullState, modifier = Modifier.align(Alignment.TopCenter), containerColor = NisekoCard, contentColor = NisekoPink)
+                            PullToRefreshContainer(state = pullState, modifier = Modifier.align(Alignment.TopCenter), containerColor = colors.card, contentColor = colors.accent)
                         }
                     }
                     Tab.WEATHER -> {
@@ -101,24 +130,29 @@ fun NisekoApp(viewModel: MainViewModel = viewModel()) {
                         }
                         Box(Modifier.fillMaxSize().nestedScroll(pullState.nestedScrollConnection)) {
                             WeatherScreen(uiState.data)
-                            PullToRefreshContainer(state = pullState, modifier = Modifier.align(Alignment.TopCenter), containerColor = NisekoCard, contentColor = NisekoPink)
+                            PullToRefreshContainer(state = pullState, modifier = Modifier.align(Alignment.TopCenter), containerColor = colors.card, contentColor = colors.accent)
                         }
                     }
                     Tab.MAP -> MapScreen(uiState.data)
                     Tab.TRAIL -> TrailMapScreen()
+                    Tab.SETTINGS -> SettingsScreen(
+                        currentTheme = themeOption,
+                        currentFontScale = fontScale,
+                        onThemeSelected = onThemeSelected,
+                        onFontScaleSelected = onFontScaleSelected,
+                    )
                 }
             }
 
-            // Error banner
             uiState.error?.let { error ->
                 Text(
                     error,
-                    color = NisekoRed,
-                    fontSize = 13.sp,
+                    color = colors.error,
+                    fontSize = 13.scaledSp,
                     textAlign = TextAlign.Center,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(NisekoRed.copy(alpha = 0.15f))
+                        .background(colors.error.copy(alpha = 0.15f))
                         .padding(8.dp),
                 )
             }
@@ -126,42 +160,42 @@ fun NisekoApp(viewModel: MainViewModel = viewModel()) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun NisekoTopBar(updateTime: String) {
+    val colors = NisekoTheme.colors
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .height(IntrinsicSize.Min)
-            .background(NisekoBg)
+            .background(colors.bg)
             .statusBarsPadding()
             .padding(vertical = 8.dp),
     ) {
-        // Mountain image on the left, spanning full height of the text
         Image(
             painter = painterResource(R.drawable.yotei),
             contentDescription = null,
             contentScale = ContentScale.FillHeight,
+            colorFilter = ColorFilter.tint(colors.accent.copy(alpha = 0.4f)),
             modifier = Modifier
                 .align(Alignment.CenterStart)
                 .fillMaxHeight()
                 .padding(start = 4.dp),
         )
-        // Text centered across the full width
         Column(
             modifier = Modifier.fillMaxWidth(),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
                 "Niseko United",
-                fontSize = 20.sp,
+                fontSize = 20.scaledSp,
                 fontWeight = FontWeight.Bold,
-                color = NisekoPink,
+                color = colors.accent,
             )
             Text(
                 updateTime,
-                fontSize = 11.sp,
-                color = NisekoTextDim,
+                fontSize = 11.scaledSp,
+                color = colors.textDim,
                 modifier = Modifier.padding(top = 2.dp),
             )
         }
@@ -170,9 +204,11 @@ private fun NisekoTopBar(updateTime: String) {
 
 @Composable
 private fun NisekoBottomBar(selectedTab: Tab, onTabSelected: (Tab) -> Unit) {
+    val colors = NisekoTheme.colors
+
     NavigationBar(
-        containerColor = NisekoTabBg,
-        contentColor = NisekoTextDim,
+        containerColor = colors.tabBg,
+        contentColor = colors.textDim,
         tonalElevation = 0.dp,
     ) {
         Tab.entries.forEach { tab ->
@@ -182,19 +218,19 @@ private fun NisekoBottomBar(selectedTab: Tab, onTabSelected: (Tab) -> Unit) {
                 icon = {
                     Text(
                         tab.icon,
-                        fontSize = 20.sp,
-                        color = if (selectedTab == tab) NisekoPink else NisekoTextDim,
+                        fontSize = 20.scaledSp,
+                        color = if (selectedTab == tab) colors.accent else colors.textDim,
                     )
                 },
                 label = {
                     Text(
                         tab.label,
-                        fontSize = 10.sp,
-                        color = if (selectedTab == tab) NisekoPink else NisekoTextDim,
+                        fontSize = 10.scaledSp,
+                        color = if (selectedTab == tab) colors.accent else colors.textDim,
                     )
                 },
                 colors = NavigationBarItemDefaults.colors(
-                    indicatorColor = NisekoCard,
+                    indicatorColor = colors.card,
                 ),
             )
         }

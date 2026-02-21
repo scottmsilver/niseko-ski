@@ -15,7 +15,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.jpski.niseko.data.*
 import com.jpski.niseko.ui.theme.*
 import com.jpski.niseko.util.TimeUtils
@@ -32,19 +31,16 @@ fun LiftsScreen(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp),
     ) {
-        // Summary bar
         item {
             SummaryBar(data, resorts)
         }
 
-        // Changes banner
         if (changes.isNotEmpty()) {
             item {
                 ChangesBanner(changes)
             }
         }
 
-        // Resort cards
         for (resort in resorts) {
             val rd = data[resort.id]
             if (rd == null || rd.lifts == null) {
@@ -53,7 +49,6 @@ fun LiftsScreen(
                 }
             } else {
                 val sortedLifts = rd.lifts.sortedBy { it.name }
-                // Sticky resort header
                 stickyHeader(key = "header-${resort.id}") {
                     ResortHeader(
                         name = resort.name,
@@ -62,18 +57,16 @@ fun LiftsScreen(
                         agoText = TimeUtils.timeAgo(TimeUtils.latestUpdateDate(rd.lifts)),
                     )
                 }
-                // Lift rows
                 items(sortedLifts, key = { "lift-${it.id}" }) { lift ->
                     val isChanged = changes.any {
-                        it.liftName == lift.name && (System.currentTimeMillis() - it.time) < 30_000
+                        it.liftName == lift.name && (System.currentTimeMillis() - it.time) < 600_000
                     }
                     LiftRow(lift, isChanged)
-                    HorizontalDivider(color = NisekoCardBorder.copy(alpha = 0.5f), thickness = 0.5.dp)
+                    HorizontalDivider(color = NisekoTheme.colors.cardBorder.copy(alpha = 0.5f), thickness = 0.5.dp)
                 }
             }
         }
 
-        // Bottom spacer for last resort sticky behavior
         item { Spacer(Modifier.height(400.dp)) }
     }
 }
@@ -104,39 +97,43 @@ private fun SummaryBar(data: Map<String, ResortData>, resorts: List<Resort>) {
                 SummaryChip("$count", status.chipLabel, status.color)
             }
         }
-        SummaryChip("${allLifts.size}", "Total", NisekoText)
+        SummaryChip("${allLifts.size}", "Total", NisekoTheme.colors.text)
     }
 }
 
 @Composable
 private fun SummaryChip(count: String, label: String, color: androidx.compose.ui.graphics.Color) {
+    val colors = NisekoTheme.colors
+
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(6.dp))
-            .background(NisekoCard)
+            .background(colors.card)
             .padding(horizontal = 6.dp, vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(3.dp),
     ) {
-        Text(count, color = color, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-        Text(label, color = NisekoTextDim, fontSize = 10.sp)
+        Text(count, color = color, fontSize = 13.scaledSp, fontWeight = FontWeight.Bold)
+        Text(label, color = colors.textDim, fontSize = 10.scaledSp)
     }
 }
 
 @Composable
 private fun ChangesBanner(changes: List<ChangeEntry>) {
+    val colors = NisekoTheme.colors
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 8.dp, vertical = 2.dp)
             .clip(RoundedCornerShape(8.dp))
-            .background(NisekoPink.copy(alpha = 0.12f))
+            .background(colors.accent.copy(alpha = 0.12f))
             .padding(8.dp),
     ) {
         Text(
             "Recent Changes (last 10 min)",
-            color = NisekoOrange,
-            fontSize = 11.sp,
+            color = colors.statusOnHold,
+            fontSize = 11.scaledSp,
             fontWeight = FontWeight.SemiBold,
         )
         Spacer(Modifier.height(2.dp))
@@ -145,8 +142,8 @@ private fun ChangesBanner(changes: List<ChangeEntry>) {
             val timeStr = if (ago < 1) "just now" else "${ago}m ago"
             Text(
                 "$timeStr  ${c.resortName} – ${c.liftName}: ${c.from} → ${c.to}",
-                color = NisekoYellow,
-                fontSize = 10.sp,
+                color = colors.statusSlowed,
+                fontSize = 10.scaledSp,
             )
         }
     }
@@ -154,10 +151,12 @@ private fun ChangesBanner(changes: List<ChangeEntry>) {
 
 @Composable
 private fun ResortHeader(name: String, openCount: Int, totalCount: Int, agoText: String = "") {
+    val colors = NisekoTheme.colors
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(NisekoCard)
+            .background(colors.card)
             .padding(horizontal = 12.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
@@ -166,41 +165,45 @@ private fun ResortHeader(name: String, openCount: Int, totalCount: Int, agoText:
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Text(name, color = NisekoPink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Text(name, color = colors.accent, fontSize = 15.scaledSp, fontWeight = FontWeight.SemiBold)
             if (agoText.isNotEmpty()) {
-                Text(agoText, color = NisekoTextDim, fontSize = 9.sp)
+                Text(agoText, color = colors.textDim, fontSize = 9.scaledSp)
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text("$openCount", color = NisekoGreen, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-            Text(" / $totalCount", color = NisekoTextDim, fontSize = 11.sp)
+            Text("$openCount", color = colors.statusOpen, fontSize = 11.scaledSp, fontWeight = FontWeight.SemiBold)
+            Text(" / $totalCount", color = colors.textDim, fontSize = 11.scaledSp)
         }
     }
 }
 
 @Composable
 private fun ResortErrorCard(name: String) {
+    val colors = NisekoTheme.colors
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(NisekoCard)
+            .background(colors.card)
             .padding(12.dp),
     ) {
-        Text(name, color = NisekoPink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+        Text(name, color = colors.accent, fontSize = 15.scaledSp, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.weight(1f))
-        Text("Error", color = NisekoRed, fontSize = 11.sp)
+        Text("Error", color = colors.error, fontSize = 11.scaledSp)
     }
 }
 
 @Composable
 private fun LiftRow(lift: LiftInfo, isChanged: Boolean) {
+    val colors = NisekoTheme.colors
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(if (isChanged) NisekoOrange.copy(alpha = 0.15f) else NisekoBg)
+            .background(if (isChanged) colors.statusOnHold.copy(alpha = 0.15f) else colors.bg)
             .padding(horizontal = 12.dp, vertical = 5.dp),
     ) {
-        Text(lift.name, color = NisekoText, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+        Text(lift.name, color = colors.text, fontSize = 13.scaledSp, fontWeight = FontWeight.Medium)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -208,13 +211,13 @@ private fun LiftRow(lift: LiftInfo, isChanged: Boolean) {
         ) {
             Text(
                 TimeUtils.liftTimeLabel(lift.startTime, lift.endTime),
-                color = NisekoTextDim,
-                fontSize = 10.sp,
+                color = colors.textDim,
+                fontSize = 10.scaledSp,
             )
             Text(
                 lift.liftStatus.label.uppercase(),
                 color = lift.liftStatus.color,
-                fontSize = 10.sp,
+                fontSize = 10.scaledSp,
                 fontWeight = FontWeight.SemiBold,
                 textAlign = TextAlign.End,
             )

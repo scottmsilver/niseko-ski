@@ -1,9 +1,11 @@
 package com.jpski.niseko.data
 
+import java.util.concurrent.CopyOnWriteArrayList
+
 class NisekoRepository {
     private val api = NisekoApi()
     private var previousData: Map<String, ResortData> = emptyMap()
-    val changeLog = mutableListOf<ChangeEntry>()
+    val changeLog = CopyOnWriteArrayList<ChangeEntry>()
 
     suspend fun fetchData(): Map<String, ResortData> {
         val data = api.fetchAllData()

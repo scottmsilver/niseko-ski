@@ -1,5 +1,6 @@
 package com.jpski.niseko
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jpski.niseko.data.ChangeEntry
@@ -7,6 +8,7 @@ import com.jpski.niseko.data.NisekoRepository
 import com.jpski.niseko.data.ResortData
 import com.jpski.niseko.util.TimeUtils
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -21,8 +23,9 @@ data class NisekoUiState(
     val updateTime: String = "Loading...",
 )
 
-class MainViewModel : ViewModel() {
-    private val repository = NisekoRepository()
+class MainViewModel(
+    private val repository: NisekoRepository = NisekoRepository(),
+) : ViewModel() {
     private val _uiState = MutableStateFlow(NisekoUiState())
     val uiState: StateFlow<NisekoUiState> = _uiState.asStateFlow()
 
@@ -36,7 +39,10 @@ class MainViewModel : ViewModel() {
 
     private fun startRefreshLoop() {
         viewModelScope.launch {
+            // viewModelScope is cancelled when the ViewModel is cleared,
+            // ensuring this loop stops when the user navigates away.
             while (true) {
+                ensureActive()
                 refresh()
                 delay(REFRESH_INTERVAL_MS)
             }
@@ -54,8 +60,10 @@ class MainViewModel : ViewModel() {
                 updateTime = TimeUtils.currentTimeFormatted(),
             )
         } catch (e: Exception) {
+            Log.e("MainViewModel", "Refresh failed", e)
             _uiState.value = _uiState.value.copy(
-                error = "Failed: ${e.message}",
+                isLoading = false,
+                error = "Unable to load resort data. Please check your connection.",
                 updateTime = "Update failed",
             )
         }
