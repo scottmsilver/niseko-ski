@@ -6,7 +6,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
@@ -21,15 +20,15 @@ private val SUMMIT_REGEX = Regex("top|peak|summit", RegexOption.IGNORE_CASE)
 private val BASE_REGEX = Regex("base|foot", RegexOption.IGNORE_CASE)
 
 @Composable
-fun WeatherScreen(data: Map<String, ResortData>) {
+fun WeatherScreen(subResorts: List<SubResortData>) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        for (resort in Resort.ALL) {
-            item(key = "wx-${resort.id}") {
-                WeatherCard(resort, data[resort.id]?.weather)
+        for (sr in subResorts) {
+            item(key = "wx-${sr.id}") {
+                WeatherCard(sr.name, sr.weather)
             }
         }
         item { Spacer(Modifier.height(80.dp)) }
@@ -37,8 +36,8 @@ fun WeatherScreen(data: Map<String, ResortData>) {
 }
 
 @Composable
-private fun WeatherCard(resort: Resort, stations: List<WeatherStation>?) {
-    val colors = NisekoTheme.colors
+private fun WeatherCard(name: String, stations: List<WeatherStation>?) {
+    val colors = SkiTheme.colors
 
     Column(
         modifier = Modifier
@@ -48,7 +47,7 @@ private fun WeatherCard(resort: Resort, stations: List<WeatherStation>?) {
             .padding(14.dp),
     ) {
         Text(
-            resort.name,
+            name,
             color = colors.accent,
             fontSize = 15.scaledSp,
             fontWeight = FontWeight.SemiBold,
@@ -60,24 +59,30 @@ private fun WeatherCard(resort: Resort, stations: List<WeatherStation>?) {
             return@Column
         }
 
-        val summit = stations.find { it.name.contains(SUMMIT_REGEX) }
-            ?: stations.firstOrNull() ?: return@Column
-        val base = stations.find { it.name.contains(BASE_REGEX) }
-            ?: stations.lastOrNull() ?: return@Column
+        if (stations.size == 1) {
+            // Single station (e.g., Vail resorts) - show single "Conditions" column
+            StationColumn("CONDITIONS", stations[0], Modifier.fillMaxWidth())
+        } else {
+            // Dual station (e.g., Niseko) - Summit / Base layout
+            val summit = stations.find { it.name.contains(SUMMIT_REGEX) }
+                ?: stations.firstOrNull() ?: return@Column
+            val base = stations.find { it.name.contains(BASE_REGEX) }
+                ?: stations.lastOrNull() ?: return@Column
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            StationColumn("SUMMIT", summit, Modifier.weight(1f))
-            StationColumn("BASE", base, Modifier.weight(1f))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                StationColumn("SUMMIT", summit, Modifier.weight(1f))
+                StationColumn("BASE", base, Modifier.weight(1f))
+            }
         }
     }
 }
 
 @Composable
 private fun StationColumn(label: String, station: WeatherStation, modifier: Modifier = Modifier) {
-    val colors = NisekoTheme.colors
+    val colors = SkiTheme.colors
 
     Column(modifier = modifier) {
         Text(
@@ -89,12 +94,14 @@ private fun StationColumn(label: String, station: WeatherStation, modifier: Modi
             modifier = Modifier.padding(bottom = 6.dp),
         )
 
-        Text(
-            "${TimeUtils.cToF(station.temperature)}°F",
-            color = colors.accentTertiary,
-            fontSize = 26.scaledSp,
-            fontWeight = FontWeight.Bold,
-        )
+        station.temperature?.let { temp ->
+            Text(
+                "${TimeUtils.cToF(temp)}°F",
+                color = colors.accentTertiary,
+                fontSize = 26.scaledSp,
+                fontWeight = FontWeight.Bold,
+            )
+        }
 
         Text(
             "${wxIcon(station.weather)} ${station.weather}",
@@ -103,10 +110,12 @@ private fun StationColumn(label: String, station: WeatherStation, modifier: Modi
             modifier = Modifier.padding(bottom = 6.dp),
         )
 
-        WxRow("Snow", "${TimeUtils.cmToIn(station.snowAccumulation)}\" (${station.snowAccumulation.toInt()}cm)")
-        WxRow("24h New", station.snowAccumulationDiff?.let {
-            "${TimeUtils.cmToIn(it)}\" (${it.toInt()}cm)"
-        } ?: "—")
+        station.snowAccumulation?.let { snow ->
+            WxRow("Snow", "${TimeUtils.cmToIn(snow)}\" (${snow.toInt()}cm)")
+        }
+        station.snowAccumulationDiff?.let { diff ->
+            WxRow("24h New", "${TimeUtils.cmToIn(diff)}\" (${diff.toInt()}cm)")
+        }
         WxRow("Condition", station.snowState)
         WxRow("Wind", station.windSpeed)
         WxRow("Courses", station.courseState)
@@ -115,7 +124,7 @@ private fun StationColumn(label: String, station: WeatherStation, modifier: Modi
 
 @Composable
 private fun WxRow(label: String, value: String) {
-    val colors = NisekoTheme.colors
+    val colors = SkiTheme.colors
 
     Row(
         modifier = Modifier

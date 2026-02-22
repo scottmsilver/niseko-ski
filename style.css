@@ -384,6 +384,8 @@
     display: flex;
     align-items: center;
     gap: 8px;
+    flex-wrap: wrap;
+    cursor: pointer;
   }
   .lift-row:last-child { border-bottom: none; }
   .lift-row.changed {
@@ -409,16 +411,28 @@
   .lift-status-text {
     font-size: 0.68rem;
     font-weight: 600;
-    text-transform: uppercase;
     white-space: nowrap;
     text-align: right;
     flex-shrink: 0;
   }
+  .lift-wait {
+    font-size: 0.68rem;
+    font-weight: 600;
+    white-space: nowrap;
+    text-align: right;
+    flex-shrink: 0;
+    min-width: 2.2em;
+  }
+  .lift-wait.wait-low { color: var(--green); }
+  .lift-wait.wait-mid { color: var(--orange); }
+  .lift-wait.wait-high { color: var(--red); }
   .lift-status-text.operating { color: var(--green); }
   .lift-status-text.slowed { color: var(--yellow); }
-  .lift-status-text.standby { color: var(--blue); }
+  .lift-status-text.standby { color: var(--yellow); }
   .lift-status-text.on-hold { color: var(--orange); }
-  .lift-status-text.closed { color: var(--purple); }
+  .lift-status-text.closed { color: var(--red); }
+  .lift-status-text.opens { color: var(--purple); }
+  .lift-status-text.closing-soon { color: var(--teal); }
 
   .error-banner {
     background: color-mix(in srgb, var(--red) 15%, transparent);
@@ -450,6 +464,31 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 
+  /* Wait time colors */
+  .lift-status-text.wait-low { color: var(--green); }
+  .lift-status-text.wait-mid { color: var(--orange); }
+  .lift-status-text.wait-high { color: var(--red); }
+
+  /* Expandable lift detail */
+  .lift-expand {
+    width: 100%;
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.2s ease, opacity 0.2s ease, padding 0.2s ease;
+    opacity: 0;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    padding: 0;
+  }
+  .lift-row.expanded .lift-expand {
+    max-height: 2em;
+    opacity: 1;
+    padding-top: 4px;
+  }
+  .lift-row.expanded {
+    background: color-mix(in srgb, var(--card-border) 20%, transparent);
+  }
+
   /* Settings tab */
   .settings-content {
     padding: 4px 0;
@@ -461,6 +500,64 @@
     margin-bottom: 12px;
     color: var(--text);
   }
+
+  /* Resort picker */
+  .resort-picker {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+  }
+  .resort-option {
+    padding: 10px 18px;
+    border-radius: 8px;
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--text);
+    transition: background 0.2s, border-color 0.2s;
+  }
+  .resort-option:hover {
+    background: color-mix(in srgb, var(--card-border) 50%, var(--card));
+  }
+  .resort-option.selected {
+    background: color-mix(in srgb, var(--pink) 15%, transparent);
+    border-color: var(--pink);
+    color: var(--pink);
+    font-weight: 600;
+  }
+  .resort-picker-heading {
+    width: 100%;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--pink);
+    margin-top: 16px;
+    margin-bottom: 8px;
+  }
+  .resort-region-group {
+    width: 100%;
+    margin-bottom: 12px;
+  }
+  .resort-region-label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+  }
+  .resort-region-row {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .resort-option-sm {
+    padding: 6px 12px;
+    font-size: 0.78rem;
+  }
+
   .theme-picker {
     display: flex;
     gap: 16px;

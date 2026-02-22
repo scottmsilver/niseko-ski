@@ -1,24 +1,51 @@
-// Load GeoJSON data
-let LIFT_GEOJSON, RUN_GEOJSON;
+// =====================================================
+// Resort Adapter Registry
+// =====================================================
+const RESORT_ADAPTERS = {};
+let activeResortId = localStorage.getItem('ski-active-resort') || 'niseko';
 
-async function loadGeoJSON() {
-  try {
-    const [liftsRes, runsRes] = await Promise.all([
-      fetch('data/lifts.geojson'),
-      fetch('data/runs.geojson'),
-    ]);
-    if (!liftsRes.ok || !runsRes.ok) throw new Error('GeoJSON fetch failed');
-    LIFT_GEOJSON = await liftsRes.json();
-    RUN_GEOJSON = await runsRes.json();
-  } catch (e) {
-    console.error('Failed to load GeoJSON:', e);
-    LIFT_GEOJSON = { type: 'FeatureCollection', features: [] };
-    RUN_GEOJSON = { type: 'FeatureCollection', features: [] };
-  }
+function getActiveAdapter() {
+  return RESORT_ADAPTERS[activeResortId] || RESORT_ADAPTERS.niseko;
 }
 
-const API_BASE = 'https://web-api.yukiyama.biz/web-api';
-const REFERER = 'https://www.niseko.ne.jp/';
+function switchResort(id, skipPush) {
+  if (!RESORT_ADAPTERS[id]) return;
+  activeResortId = id;
+  localStorage.setItem('ski-active-resort', id);
+  if (!skipPush) history.pushState(null, '', '/' + id);
+  // Reset state
+  previousData = null;
+  latestData = null;
+  lastRenderedHash = '';
+  changeLog = [];
+  fetchCount = 0;
+  if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
+  // Reset map state
+  mapInit = false;
+  trailMapInit = false;
+  mapRef = null;
+  // Update UI
+  updateHeader();
+  updateTabVisibility();
+  renderResortPicker();
+  // Clear panels
+  document.getElementById('lifts-content').innerHTML =
+    '<div class="loading"><div class="spinner"></div>Fetching lift status...</div>';
+  document.getElementById('weather-content').innerHTML = '';
+  const mapContainer = document.getElementById('map');
+  if (mapContainer) mapContainer.innerHTML = '';
+  // Switch to Lifts tab
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelector('.tab-btn[data-tab="lifts"]').classList.add('active');
+  document.getElementById('panel-lifts').classList.add('active');
+  refreshGeneration++;
+  refresh();
+}
+
+// =====================================================
+// Shared constants & state
+// =====================================================
 const REFRESH_INTERVAL_MS = 120000;
 const CHANGE_WINDOW_MS = 600000;
 const CHANGE_HIGHLIGHT_MS = 30000;
@@ -26,21 +53,305 @@ const WHEEL_ZOOM_IN = 1.15;
 const WHEEL_ZOOM_OUT = 0.87;
 const KM_PER_DEGREE = 111;
 
-const RESORTS = [
-  { id: '379', name: 'Hanazono' },
-  { id: '390', name: 'Grand Hirafu' },
-  { id: '393', name: 'Annupuri' },
-  { id: '394', name: 'Niseko Village' },
-];
-
-let previousData = {};
-let latestData = {};
+let previousData = null;
+let latestData = null;
 let lastRenderedHash = '';
 let changeLog = [];
 let refreshTimer = null;
 let fetchCount = 0;
+let refreshGeneration = 0;
+let consecutiveFailures = 0;
 
-// --- Theme & Font Settings ---
+// =====================================================
+// Niseko Adapter
+// =====================================================
+RESORT_ADAPTERS.niseko = {
+  id: 'niseko',
+  name: 'Niseko United',
+  timezone: 'Asia/Tokyo',
+  headerImage: 'yotei.png',
+  capabilities: { weather: true, trailMap: true, interactiveMap: true },
+
+  RESORTS: [
+    { id: '379', name: 'Hanazono' },
+    { id: '390', name: 'Grand Hirafu' },
+    { id: '393', name: 'Annupuri' },
+    { id: '394', name: 'Niseko Village' },
+  ],
+
+  API_BASE: '/api/niseko',
+
+  LIFT_NAME_MAP: {
+    'エースファミリークワッド': 'Ace Family Quad Lift',
+    'キングホリデー第1ペア': 'King Holiday Pair Lift',
+    'エースゴンドラ': 'Ace Gondola - 10 Person',
+    'エース第3ペアリフト': 'Ace Pair Lift #3',
+    'エース第4ペア': 'Ace Pair Lift #4',
+    'ワンダーランドチェアA線': 'Wonderland Chair',
+    'ワンダーランドチェアB線': 'Wonderland Chair',
+    'キング第4リフト': 'King Single Lift #4',
+    '花園第3クワッド フード付': 'Hanazono 3',
+    '花園第2クワッド': 'Hanazono 2',
+    'HANAZONO第1リフトフード付き': 'Hanazono Lift#1',
+    'キング第３リフト': 'King Sixpack Lift #3',
+    'スインギングモンキー': 'Swinging Monkey',
+    'ニセコゴンドラ': 'Niseko Gondola',
+    'ジャンボ第１クワッドリフト': 'Jumbo Quad #1',
+    'カントリーロードチェア': 'Country Road Chair',
+    'クワッドリフト': 'Dream Quad Lift #1',
+    'ジャンボ第4ペアリフト': 'Jumbo Pair #4',
+    '森のチェア': 'Mori No Chair',
+    'King Gondola': 'King Gondola - 8 Person',
+    'コミュニティーチェア': 'Community Chair',
+    '第１ペアリフト (No1 Pair Lift)': 'Jumbo Pair #2',
+    '第２ペアリフト (No2 Pair Lift)': 'Jumbo Pair #3',
+    'ジャンボ第3ペアリフト': 'Jumbo Pair #3',
+    'アンヌプリゴンドラ': 'Annupuri Gondola',
+    'ジャンボ第2ペアリフト': 'Jumbo Pair #2',
+    'バンザイチェア': 'Banzai Chair',
+    'ドリーム第1クワッドリフト': 'Dream Quad Lift #1',
+    'ビレッジエクスプレス': 'Village Express',
+    'アッパービレッジゴンドラ': 'Upper Village Gondola',
+    'HANAZONO シンフォニーゴンドラ': 'Hanazono Symphony Gondola',
+  },
+
+  LIFT_GEOJSON: null,
+  RUN_GEOJSON: null,
+  LIFT_DATA: null,
+
+  async loadGeoJSON() {
+    try {
+      const [liftsRes, runsRes] = await Promise.all([
+        fetch('data/lifts.geojson'),
+        fetch('data/runs.geojson'),
+      ]);
+      if (!liftsRes.ok || !runsRes.ok) throw new Error('GeoJSON fetch failed');
+      this.LIFT_GEOJSON = await liftsRes.json();
+      this.RUN_GEOJSON = await runsRes.json();
+    } catch (e) {
+      console.error('Failed to load GeoJSON:', e);
+      this.LIFT_GEOJSON = { type: 'FeatureCollection', features: [] };
+      this.RUN_GEOJSON = { type: 'FeatureCollection', features: [] };
+    }
+  },
+
+  initLiftData() {
+    this.LIFT_DATA = structuredClone(this.LIFT_GEOJSON);
+    this.LIFT_DATA.features = this.LIFT_DATA.features
+      .filter(f => this.LIFT_NAME_MAP[f.properties.name])
+      .map(f => { f.properties.en_name = this.LIFT_NAME_MAP[f.properties.name]; return f; });
+  },
+
+  async fetchJSON(url) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  fetchResortData(endpoint) {
+    return Promise.all(this.RESORTS.map(r =>
+      this.fetchJSON(`${this.API_BASE}/${endpoint}?skiareaId=${r.id}`)
+        .then(d => [r.id, d.results || []])
+        .catch(() => [r.id, null])
+    )).then(results => Object.fromEntries(results));
+  },
+
+  async fetchData() {
+    const [lifts, weather] = await Promise.all([
+      this.fetchResortData('lifts'),
+      this.fetchResortData('weather'),
+    ]);
+    const subResorts = this.RESORTS.map(r => ({
+      id: r.id,
+      name: r.name,
+      lifts: lifts[r.id] ? lifts[r.id].map(l => ({
+        id: l.id,
+        name: l.name,
+        status: l.status,
+        start_time: l.start_time,
+        end_time: l.end_time,
+        updateDate: l.updateDate,
+        comment: l.comment || null,
+      })) : null,
+      weather: weather[r.id] || null,
+    }));
+    return { subResorts, capabilities: this.capabilities };
+  },
+
+  async initMap() {
+    if (!this.LIFT_DATA) {
+      await this.loadGeoJSON();
+      this.initLiftData();
+    }
+    initNisekoMap(this);
+  },
+
+  initTrailMap() {
+    initNisekoTrailMap();
+  },
+
+  updateMapLifts(data) {
+    if (!mapRef || !data || !this.LIFT_DATA) return;
+    const allLifts = data.subResorts.flatMap(sr => sr.lifts || []);
+    const statusByName = {};
+    allLifts.forEach(l => { statusByName[l.name] = l.status; });
+
+    this.LIFT_DATA.features.forEach(f => {
+      const en = f.properties.en_name;
+      f.properties.status = statusByName[en] || 'unknown';
+      f.properties.statusColor = statusHex(f.properties.status);
+    });
+
+    const src = mapRef.getSource('lifts');
+    if (src) src.setData(this.LIFT_DATA);
+  },
+};
+
+// =====================================================
+// Vail Resorts Adapter Factory
+// =====================================================
+const VAIL_RESORTS = [
+  // Colorado
+  { id: 'vail', name: 'Vail', region: 'Colorado', timezone: 'America/Denver' },
+  { id: 'beavercreek', name: 'Beaver Creek', region: 'Colorado', timezone: 'America/Denver' },
+  { id: 'breckenridge', name: 'Breckenridge', region: 'Colorado', timezone: 'America/Denver' },
+  { id: 'keystone', name: 'Keystone', region: 'Colorado', timezone: 'America/Denver' },
+  { id: 'crestedbutte', name: 'Crested Butte', region: 'Colorado', timezone: 'America/Denver' },
+  // Utah
+  { id: 'parkcity', name: 'Park City Mountain', region: 'Utah', timezone: 'America/Denver' },
+  // Tahoe
+  { id: 'heavenly', name: 'Heavenly', region: 'Tahoe', timezone: 'America/Los_Angeles' },
+  { id: 'northstar', name: 'Northstar', region: 'Tahoe', timezone: 'America/Los_Angeles' },
+  { id: 'kirkwood', name: 'Kirkwood', region: 'Tahoe', timezone: 'America/Los_Angeles' },
+  // Pacific NW
+  { id: 'stevenspass', name: 'Stevens Pass', region: 'Pacific NW', timezone: 'America/Los_Angeles' },
+  { id: 'whistlerblackcomb', name: 'Whistler Blackcomb', region: 'British Columbia', timezone: 'America/Vancouver' },
+  // Vermont
+  { id: 'stowe', name: 'Stowe', region: 'Vermont', timezone: 'America/New_York' },
+  { id: 'okemo', name: 'Okemo', region: 'Vermont', timezone: 'America/New_York' },
+  { id: 'mtsnow', name: 'Mount Snow', region: 'Vermont', timezone: 'America/New_York' },
+  // New Hampshire
+  { id: 'mountsunapee', name: 'Mount Sunapee', region: 'New Hampshire', timezone: 'America/New_York' },
+  { id: 'attitashmountain', name: 'Attitash', region: 'New Hampshire', timezone: 'America/New_York' },
+  { id: 'wildcatmountain', name: 'Wildcat Mountain', region: 'New Hampshire', timezone: 'America/New_York' },
+  { id: 'crotchedmountain', name: 'Crotched Mountain', region: 'New Hampshire', timezone: 'America/New_York' },
+  // New York
+  { id: 'hunter', name: 'Hunter Mountain', region: 'New York', timezone: 'America/New_York' },
+  // Mid-Atlantic
+  { id: 'sevensprings', name: 'Seven Springs', region: 'Mid-Atlantic', timezone: 'America/New_York' },
+  { id: 'libertymountain', name: 'Liberty Mountain', region: 'Mid-Atlantic', timezone: 'America/New_York' },
+  { id: 'roundtopmountain', name: 'Roundtop Mountain', region: 'Mid-Atlantic', timezone: 'America/New_York' },
+  { id: 'whitetail', name: 'Whitetail', region: 'Mid-Atlantic', timezone: 'America/New_York' },
+  { id: 'jackfrostbigboulder', name: 'Jack Frost / Big Boulder', region: 'Mid-Atlantic', timezone: 'America/New_York' },
+  { id: 'hiddenvalleypa', name: 'Hidden Valley PA', region: 'Mid-Atlantic', timezone: 'America/New_York' },
+  { id: 'laurelmountain', name: 'Laurel Mountain', region: 'Mid-Atlantic', timezone: 'America/New_York' },
+  // Midwest
+  { id: 'aftonalps', name: 'Afton Alps', region: 'Midwest', timezone: 'America/Chicago' },
+  { id: 'mtbrighton', name: 'Mt. Brighton', region: 'Midwest', timezone: 'America/Detroit' },
+  { id: 'wilmotmountain', name: 'Wilmot Mountain', region: 'Midwest', timezone: 'America/Chicago' },
+  { id: 'alpinevalley', name: 'Alpine Valley', region: 'Midwest', timezone: 'America/New_York' },
+  { id: 'bmbw', name: 'Boston Mills / Brandywine', region: 'Midwest', timezone: 'America/New_York' },
+  { id: 'madrivermountain', name: 'Mad River Mountain', region: 'Midwest', timezone: 'America/New_York' },
+  { id: 'hiddenvalley', name: 'Hidden Valley MO', region: 'Midwest', timezone: 'America/Chicago' },
+  { id: 'snowcreek', name: 'Snow Creek', region: 'Midwest', timezone: 'America/Chicago' },
+  { id: 'paolipeaks', name: 'Paoli Peaks', region: 'Midwest', timezone: 'America/Indiana/Indianapolis' },
+];
+
+const VAIL_STATUS_MAP = {
+  'Open': 'OPERATING',
+  'Scheduled': 'CLOSED',
+  'OnHold': 'OPERATION_TEMPORARILY_SUSPENDED',
+  'Closed': 'CLOSED',
+};
+
+function createVailAdapter(resort) {
+  return {
+    id: resort.id,
+    name: resort.name,
+    timezone: resort.timezone,
+    headerImage: null,
+    capabilities: { weather: true, trailMap: false, interactiveMap: false },
+
+    async fetchData() {
+      const [terrainRes, weatherRes] = await Promise.all([
+        fetch(`/api/vail/${resort.id}/terrain`),
+        fetch(`/api/vail/${resort.id}/weather`).catch(() => null),
+      ]);
+      if (!terrainRes.ok) throw new Error(`Terrain HTTP ${terrainRes.status}`);
+      const terrain = await terrainRes.json();
+      if (terrain.error) throw new Error(terrain.error);
+
+      // Group lifts by mountain area
+      const areas = {};
+      for (const lift of (terrain.Lifts || [])) {
+        const area = lift.Mountain || resort.name;
+        if (!areas[area]) areas[area] = [];
+        let status = VAIL_STATUS_MAP[lift.Status];
+        if (!status) {
+          console.warn(`${resort.name}: unknown status "${lift.Status}" for "${lift.Name}"`);
+          status = 'CLOSED';
+        }
+        areas[area].push({
+          id: lift.Name,
+          name: lift.Name,
+          status: status,
+          vailStatus: lift.Status,
+          start_time: lift.OpenTime || null,
+          end_time: lift.CloseTime || null,
+          waitMinutes: lift.WaitTimeInMinutes || 0,
+          updateDate: null,
+          liftType: lift.Type || null,
+          capacity: lift.Capacity || null,
+        });
+      }
+
+      // Build weather from Vail weather API
+      let weather = null;
+      if (weatherRes && weatherRes.ok) {
+        try {
+          const w = await weatherRes.json();
+          const snowReading = w.BaseSnowReadings?.MidMountain;
+          const newSnow24 = w.NewSnowReadings?.TwentyFourHours;
+          weather = [{
+            name: resort.name,
+            weather: w.SnowConditions || '',
+            temperature: null,
+            snow_accumulation: snowReading ? parseInt(snowReading.Centimeters, 10) : null,
+            snow_accumulation_difference: newSnow24 ? parseInt(newSnow24.Centimeters, 10) : null,
+            snow_state: w.SnowConditions || null,
+            wind_speed: null,
+            cource_state: `${w.Runs?.Open || 0} / ${w.Runs?.Total || 0} runs`,
+          }];
+        } catch (e) {
+          console.warn(`${resort.name} weather parse failed:`, e.message);
+        }
+      }
+
+      const subResorts = Object.entries(areas).map(([name, lifts]) => ({
+        id: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+        name: name,
+        lifts: lifts,
+        weather: null,
+      }));
+
+      // Attach weather to first sub-resort
+      if (weather && subResorts.length > 0) {
+        subResorts[0].weather = weather;
+      }
+
+      return { subResorts, capabilities: this.capabilities };
+    },
+  };
+}
+
+// Register all Vail resort adapters
+for (const resort of VAIL_RESORTS) {
+  RESORT_ADAPTERS[resort.id] = createVailAdapter(resort);
+}
+
+// =====================================================
+// Theme & Font Settings
+// =====================================================
 const THEMES = [
   { name: 'light', label: 'Light', bg: '#f5f5f7', accent: '#e85d75' },
   { name: 'dark', label: 'Dark', bg: '#1a1a2e', accent: '#ff6b9d' },
@@ -56,8 +367,8 @@ const FONT_SCALES = [
   { label: 'Huge', scale: 1.5 },
 ];
 
-let currentTheme = localStorage.getItem('niseko-theme') || 'light';
-let currentFontScale = parseFloat(localStorage.getItem('niseko-font-scale')) || 1;
+let currentTheme = localStorage.getItem('ski-theme') || 'light';
+let currentFontScale = parseFloat(localStorage.getItem('ski-font-scale')) || 1;
 
 function applyTheme(name) {
   currentTheme = name;
@@ -66,9 +377,8 @@ function applyTheme(name) {
   } else {
     document.documentElement.setAttribute('data-theme', name);
   }
-  localStorage.setItem('niseko-theme', name);
+  localStorage.setItem('ski-theme', name);
 
-  // Update meta theme-color
   const theme = THEMES.find(t => t.name === name);
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta && theme) meta.content = theme.bg;
@@ -77,10 +387,69 @@ function applyTheme(name) {
 function applyFontScale(scale) {
   currentFontScale = scale;
   document.documentElement.style.setProperty('--font-scale', scale);
-  localStorage.setItem('niseko-font-scale', String(scale));
+  localStorage.setItem('ski-font-scale', String(scale));
+}
+
+function renderResortPicker() {
+  const picker = document.getElementById('resort-picker');
+  if (!picker) return;
+  picker.innerHTML = '';
+
+  // Niseko (standalone, not a Vail resort)
+  const nisekoCard = document.createElement('div');
+  nisekoCard.className = 'resort-option' + (activeResortId === 'niseko' ? ' selected' : '');
+  nisekoCard.textContent = RESORT_ADAPTERS.niseko.name;
+  nisekoCard.addEventListener('click', () => {
+    if (activeResortId !== 'niseko') switchResort('niseko');
+  });
+  picker.appendChild(nisekoCard);
+
+  // Vail resorts grouped by region
+  const h3 = document.createElement('h3');
+  h3.className = 'resort-picker-heading';
+  h3.textContent = 'Epic Resorts';
+  picker.appendChild(h3);
+
+  // Group by region preserving order
+  const regions = [];
+  const regionMap = {};
+  for (const r of VAIL_RESORTS) {
+    if (!regionMap[r.region]) {
+      regionMap[r.region] = [];
+      regions.push(r.region);
+    }
+    regionMap[r.region].push(r);
+  }
+
+  for (const region of regions) {
+    const group = document.createElement('div');
+    group.className = 'resort-region-group';
+    const label = document.createElement('div');
+    label.className = 'resort-region-label';
+    label.textContent = region;
+    group.appendChild(label);
+
+    const row = document.createElement('div');
+    row.className = 'resort-region-row';
+    for (const r of regionMap[region]) {
+      const card = document.createElement('div');
+      card.className = 'resort-option resort-option-sm' + (activeResortId === r.id ? ' selected' : '');
+      card.textContent = r.name;
+      card.addEventListener('click', () => {
+        if (activeResortId !== r.id) switchResort(r.id);
+      });
+      row.appendChild(card);
+    }
+    group.appendChild(row);
+    picker.appendChild(group);
+  }
 }
 
 function renderSettings() {
+  // Resort picker
+  renderResortPicker();
+
+  // Theme picker
   const picker = document.getElementById('theme-picker');
   picker.innerHTML = '';
   THEMES.forEach(t => {
@@ -124,28 +493,81 @@ function renderSettings() {
   });
 }
 
-// --- Tab Switching ---
+// =====================================================
+// Tab Switching
+// =====================================================
 let mapInit = false;
+let trailMapInit = false;
+
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById('panel-' + btn.dataset.tab).classList.add('active');
-    if (btn.dataset.tab === 'map' && !mapInit) {
+    const adapter = getActiveAdapter();
+    if (btn.dataset.tab === 'map' && !mapInit && adapter.initMap) {
       mapInit = true;
-      initMap();
+      adapter.initMap();
     }
-    if (btn.dataset.tab === 'trail' && !trailMapInit) {
+    if (btn.dataset.tab === 'trail' && !trailMapInit && adapter.initTrailMap) {
       trailMapInit = true;
-      initTrailMap();
+      adapter.initTrailMap();
     }
   });
 });
 
-// Trail Map - pinch-zoom & pan
-let trailMapInit = false;
-function initTrailMap() {
+// =====================================================
+// Tab Visibility
+// =====================================================
+function updateTabVisibility() {
+  const adapter = getActiveAdapter();
+  const caps = adapter.capabilities;
+  const tabMap = {
+    weather: caps.weather,
+    trail: caps.trailMap,
+    map: caps.interactiveMap,
+  };
+  for (const [tab, visible] of Object.entries(tabMap)) {
+    const btn = document.querySelector(`.tab-btn[data-tab="${tab}"]`);
+    const panel = document.getElementById(`panel-${tab}`);
+    if (btn) btn.style.display = visible ? '' : 'none';
+    if (panel && !visible) panel.classList.remove('active');
+  }
+  // If the currently active tab is hidden, switch to lifts
+  const activeBtn = document.querySelector('.tab-btn.active');
+  if (activeBtn && activeBtn.style.display === 'none') {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    document.querySelector('.tab-btn[data-tab="lifts"]').classList.add('active');
+    document.getElementById('panel-lifts').classList.add('active');
+  }
+}
+
+// =====================================================
+// Header Updates
+// =====================================================
+function updateHeader() {
+  const adapter = getActiveAdapter();
+  document.querySelector('.header-line1').textContent = adapter.name;
+  document.title = adapter.name;
+
+  const mountain = document.querySelector('.header-mountain');
+  if (mountain) {
+    if (adapter.headerImage) {
+      mountain.style.display = '';
+      mountain.style.setProperty('-webkit-mask-image', `url(${adapter.headerImage})`);
+      mountain.style.setProperty('mask-image', `url(${adapter.headerImage})`);
+    } else {
+      mountain.style.display = 'none';
+    }
+  }
+}
+
+// =====================================================
+// Trail Map - pinch-zoom & pan (Niseko-specific)
+// =====================================================
+function initNisekoTrailMap() {
   const container = document.getElementById('trail-map-container');
   const img = document.getElementById('trail-map-img');
   const loading = document.getElementById('trail-map-loading');
@@ -181,12 +603,12 @@ function initTrailMap() {
   }
 
   function saveTrailState() {
-    localStorage.setItem('niseko-trail-state', JSON.stringify({ scale, tx, ty }));
+    localStorage.setItem('ski-trail-state', JSON.stringify({ scale, tx, ty }));
   }
 
   function loadTrailState() {
     try {
-      const saved = JSON.parse(localStorage.getItem('niseko-trail-state'));
+      const saved = JSON.parse(localStorage.getItem('ski-trail-state'));
       if (saved && saved.scale > 0) return saved;
     } catch (e) {}
     return null;
@@ -300,86 +722,10 @@ function initTrailMap() {
   });
 }
 
-const LIFT_NAME_MAP = {
-  'エースファミリークワッド': 'Ace Family Quad Lift',
-  'キングホリデー第1ペア': 'King Holiday Pair Lift',
-  'エースゴンドラ': 'Ace Gondola - 10 Person',
-  'エース第3ペアリフト': 'Ace Pair Lift #3',
-  'エース第4ペア': 'Ace Pair Lift #4',
-  'ワンダーランドチェアA線': 'Wonderland Chair',
-  'ワンダーランドチェアB線': 'Wonderland Chair',
-  'キング第4リフト': 'King Single Lift #4',
-  '花園第3クワッド フード付': 'Hanazono 3',
-  '花園第2クワッド': 'Hanazono 2',
-  'HANAZONO第1リフトフード付き': 'Hanazono Lift#1',
-  'キング第３リフト': 'King Sixpack Lift #3',
-  'スインギングモンキー': 'Swinging Monkey',
-  'ニセコゴンドラ': 'Niseko Gondola',
-  'ジャンボ第１クワッドリフト': 'Jumbo Quad #1',
-  'カントリーロードチェア': 'Country Road Chair',
-  'クワッドリフト': 'Dream Quad Lift #1',
-  'ジャンボ第4ペアリフト': 'Jumbo Pair #4',
-  '森のチェア': 'Mori No Chair',
-  'King Gondola': 'King Gondola - 8 Person',
-  'コミュニティーチェア': 'Community Chair',
-  '第１ペアリフト (No1 Pair Lift)': 'Jumbo Pair #2',
-  '第２ペアリフト (No2 Pair Lift)': 'Jumbo Pair #3',
-  'ジャンボ第3ペアリフト': 'Jumbo Pair #3',
-  'アンヌプリゴンドラ': 'Annupuri Gondola',
-  'ジャンボ第2ペアリフト': 'Jumbo Pair #2',
-  'バンザイチェア': 'Banzai Chair',
-  'ドリーム第1クワッドリフト': 'Dream Quad Lift #1',
-  'ビレッジエクスプレス': 'Village Express',
-  'アッパービレッジゴンドラ': 'Upper Village Gondola',
-  'HANAZONO シンフォニーゴンドラ': 'Hanazono Symphony Gondola',
-};
-
-// Add English names and filter to only known lifts (initialized after GeoJSON loads)
-let LIFT_DATA = null;
-function initLiftData() {
-  LIFT_DATA = structuredClone(LIFT_GEOJSON);
-  LIFT_DATA.features = LIFT_DATA.features
-    .filter(f => LIFT_NAME_MAP[f.properties.name])
-    .map(f => { f.properties.en_name = LIFT_NAME_MAP[f.properties.name]; return f; });
-}
-
+// =====================================================
+// Interactive Map (Niseko-specific)
+// =====================================================
 let mapRef = null;
-
-function updateMapLifts() {
-  if (!mapRef || !latestData || !LIFT_DATA) return;
-  const allLifts = RESORTS.flatMap(r => latestData[r.id]?.lifts || []);
-  const statusByName = {};
-  allLifts.forEach(l => { statusByName[l.name] = l.status; });
-
-  LIFT_DATA.features.forEach(f => {
-    const en = f.properties.en_name;
-    f.properties.status = statusByName[en] || 'unknown';
-    f.properties.statusColor = statusHex(f.properties.status);
-  });
-
-  const src = mapRef.getSource('lifts');
-  if (src) src.setData(LIFT_DATA);
-}
-
-function liftCenter() {
-  let minLng = 999, maxLng = -999, minLat = 999, maxLat = -999;
-  LIFT_DATA.features.forEach(f => {
-    f.geometry.coordinates.forEach(([lng, lat]) => {
-      if (lng < minLng) minLng = lng;
-      if (lng > maxLng) maxLng = lng;
-      if (lat < minLat) minLat = lat;
-      if (lat > maxLat) maxLat = lat;
-    });
-  });
-  // Span in km
-  const cosLat = Math.cos(((minLat + maxLat) / 2) * Math.PI / 180);
-  const spanKmX = (maxLng - minLng) * KM_PER_DEGREE * cosLat;
-  const spanKmY = (maxLat - minLat) * KM_PER_DEGREE;
-  const spanKm = Math.max(spanKmX, spanKmY);
-  // Zoom: at z13 ≈ 5km across, each +1 halves it. +0.8 to crop sides
-  const zoom = Math.log2(5 / spanKm) + 13 + 0.8;
-  return { center: [(minLng + maxLng) / 2, (minLat + maxLat) / 2], zoom };
-}
 
 // Decode terrarium DEM: elevation = (R*256 + G + B/256) - 32768
 function terrariumToElevation(imageData) {
@@ -393,31 +739,29 @@ function terrariumToElevation(imageData) {
 
 // Marching squares contour lines on elevation data
 function drawContours(ctx, elev, w, h, interval, color, lw) {
-  const minE = elev[0], maxE = elev[0];
   let mn = Infinity, mx = -Infinity;
   for (let i = 0; i < elev.length; i++) {
     if (elev[i] < mn) mn = elev[i];
     if (elev[i] > mx) mx = elev[i];
   }
   const start = Math.ceil(mn / interval) * interval;
-  // Segment lookup: case → pairs of edges to connect
   const SEGS = [
-    [],                               // 0
-    [['left','bottom']],              // 1
-    [['bottom','right']],             // 2
-    [['left','right']],               // 3
-    [['top','right']],                // 4
-    [['top','right'],['left','bottom']], // 5 saddle
-    [['top','bottom']],               // 6
-    [['top','left']],                 // 7
-    [['top','left']],                 // 8
-    [['top','bottom']],               // 9
-    [['top','left'],['bottom','right']], // 10 saddle
-    [['top','right']],                // 11
-    [['left','right']],               // 12
-    [['bottom','right']],             // 13
-    [['left','bottom']],              // 14
-    [],                               // 15
+    [],
+    [['left','bottom']],
+    [['bottom','right']],
+    [['left','right']],
+    [['top','right']],
+    [['top','right'],['left','bottom']],
+    [['top','bottom']],
+    [['top','left']],
+    [['top','left']],
+    [['top','bottom']],
+    [['top','left'],['bottom','right']],
+    [['top','right']],
+    [['left','right']],
+    [['bottom','right']],
+    [['left','bottom']],
+    [],
   ];
 
   ctx.strokeStyle = color;
@@ -478,11 +822,8 @@ maplibregl.addProtocol('pencil', async (params) => {
   ctx.drawImage(bmp, 0, 0);
   const elev = terrariumToElevation(ctx.getImageData(0, 0, c.width, c.height));
   ctx.clearRect(0, 0, c.width, c.height);
-  // Subtle relief shading
   drawRelief(ctx, elev, c.width, c.height);
-  // Minor contour lines every 50m
   drawContours(ctx, elev, c.width, c.height, 50, 'rgba(130,120,100,0.25)', 0.5);
-  // Major contour lines every 200m
   drawContours(ctx, elev, c.width, c.height, 200, 'rgba(100,90,70,0.45)', 1.0);
   const outBlob = await new Promise(r => c.toBlob(r, 'image/png'));
   const data = await outBlob.arrayBuffer();
@@ -491,13 +832,13 @@ maplibregl.addProtocol('pencil', async (params) => {
 
 function loadMapState() {
   try {
-    const saved = JSON.parse(localStorage.getItem('niseko-map-state'));
+    const saved = JSON.parse(localStorage.getItem('ski-map-state'));
     if (saved && saved.center) return saved;
   } catch (e) {}
   return null;
 }
 
-function initMap() {
+function initNisekoMap(adapter) {
   const savedMap = loadMapState();
   const map = new maplibregl.Map({
     container: 'map',
@@ -534,8 +875,7 @@ function initMap() {
   map.addControl(new maplibregl.NavigationControl(), 'top-right');
 
   map.on('load', () => {
-    // Ski runs - pencil sketch style
-    map.addSource('runs', { type: 'geojson', data: RUN_GEOJSON });
+    map.addSource('runs', { type: 'geojson', data: adapter.RUN_GEOJSON });
     map.addLayer({
       id: 'runs-line',
       type: 'line',
@@ -547,8 +887,7 @@ function initMap() {
       }
     });
 
-    // Lifts - solid, status-colored
-    map.addSource('lifts', { type: 'geojson', data: LIFT_DATA });
+    map.addSource('lifts', { type: 'geojson', data: adapter.LIFT_DATA });
     map.addLayer({
       id: 'lifts-line',
       type: 'line',
@@ -563,7 +902,6 @@ function initMap() {
       }
     });
 
-    // Lift labels - dark on light, along the line
     map.addLayer({
       id: 'lift-labels',
       type: 'symbol',
@@ -584,14 +922,12 @@ function initMap() {
       }
     });
 
-    // Update colors if data already loaded
-    updateMapLifts();
+    if (latestData) adapter.updateMapLifts(latestData);
   });
 
-  // Save map position on move
   map.on('moveend', () => {
     const c = map.getCenter();
-    localStorage.setItem('niseko-map-state', JSON.stringify({
+    localStorage.setItem('ski-map-state', JSON.stringify({
       center: [c.lng, c.lat],
       zoom: map.getZoom(),
       pitch: map.getPitch(),
@@ -599,7 +935,6 @@ function initMap() {
     }));
   });
 
-  // Position readout
   const posEl = document.getElementById('map-pos');
   function updatePos() {
     const c = map.getCenter();
@@ -610,15 +945,18 @@ function initMap() {
   updatePos();
 }
 
+// =====================================================
+// Status helpers
+// =====================================================
 const STATUS_INFO = {
-  'OPERATING':                       { css: 'operating', label: 'Open',    color: 'var(--green)',  hex: '#7bed9f' },
-  'OPERATION_SLOWED':                { css: 'slowed',    label: 'Slowed',  color: 'var(--yellow)', hex: '#eccc68' },
-  'STANDBY':                         { css: 'standby',   label: 'Standby', color: 'var(--blue)',   hex: '#70a1ff' },
-  'OPERATION_TEMPORARILY_SUSPENDED': { css: 'on-hold',   label: 'Hold', color: 'var(--orange)', hex: '#ff9f43' },
-  'SUSPENDED_CLOSED':                { css: 'closed',    label: 'Closed',  color: 'var(--purple)', hex: '#a29bfe' },
-  'CLOSED':                          { css: 'closed',    label: 'Closed',  color: 'var(--purple)', hex: '#a29bfe' },
+  'OPERATING':                       { css: 'operating', label: 'open',    color: 'var(--green)',  hex: '#7bed9f' },
+  'OPERATION_SLOWED':                { css: 'slowed',    label: 'slowed',  color: 'var(--yellow)', hex: '#eccc68' },
+  'STANDBY':                         { css: 'standby',   label: 'standby', color: 'var(--yellow)', hex: '#eccc68' },
+  'OPERATION_TEMPORARILY_SUSPENDED': { css: 'on-hold',   label: 'hold',    color: 'var(--orange)', hex: '#ff9f43' },
+  'SUSPENDED_CLOSED':                { css: 'closed',    label: 'closed',  color: 'var(--red)',    hex: '#ff6b81' },
+  'CLOSED':                          { css: 'closed',    label: 'closed',  color: 'var(--red)',    hex: '#ff6b81' },
 };
-const DEFAULT_STATUS_INFO = { css: 'closed', label: 'Closed', color: 'var(--purple)', hex: '#555' };
+const DEFAULT_STATUS_INFO = { css: 'closed', label: 'closed', color: 'var(--red)', hex: '#ff6b81' };
 
 function statusInfo(status) { return STATUS_INFO[status] || DEFAULT_STATUS_INFO; }
 function statusClass(status) { return statusInfo(status).css; }
@@ -629,12 +967,22 @@ function isRunning(status) {
   return status === 'OPERATING' || status === 'OPERATION_SLOWED';
 }
 
-function jstNow() {
-  const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Tokyo', hour: 'numeric', minute: 'numeric', hour12: false }).formatToParts(new Date());
+function waitClass(minutes) {
+  if (minutes <= 5) return 'wait-low';
+  if (minutes <= 15) return 'wait-mid';
+  return 'wait-high';
+}
+
+// =====================================================
+// Time utilities (timezone-aware)
+// =====================================================
+function resortNow(timezone) {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: timezone, hourCycle: 'h23', hour: 'numeric', minute: 'numeric' }).formatToParts(new Date());
   return { h: parseInt(parts.find(p => p.type === 'hour').value), m: parseInt(parts.find(p => p.type === 'minute').value) };
 }
 
-function jstNowMinutes() { const { h, m } = jstNow(); return h * 60 + m; }
+function resortNowMinutes(timezone) { const { h, m } = resortNow(timezone); return h * 60 + m; }
+function toMin(t) { const [h, m] = t.split(':').map(Number); return h * 60 + m; }
 
 function fmtTime(t) {
   const [h, m] = typeof t === 'string' ? t.split(':').map(Number) : [t.h, t.m];
@@ -643,14 +991,35 @@ function fmtTime(t) {
   return m === 0 ? `${hr}${suffix}` : `${hr}:${String(m).padStart(2,'0')}${suffix}`;
 }
 
-function liftTimeLabel(start, end) {
-  const nowMin = jstNowMinutes();
+const CLOSING_SOON_MIN = 90;
+
+function liftTimeLabel(start, end, timezone, status) {
+  if (!start || !end) return '';
+  if (!isRunning(status)) return '';
+  const nowMin = resortNowMinutes(timezone);
   const [sh, sm] = start.split(':').map(Number);
   const [eh, em] = end.split(':').map(Number);
-  if (nowMin >= sh * 60 + sm && nowMin < eh * 60 + em) {
-    return `til ${fmtTime(end)}`;
+  const startMin = sh * 60 + sm;
+  const endMin = eh * 60 + em;
+  if (nowMin < startMin) return `opens ${fmtTime(start)}`;
+  if (endMin - nowMin <= CLOSING_SOON_MIN && endMin > nowMin) {
+    return `${fmtTime(start)} – ${fmtTime(end)}`;
   }
-  return `${fmtTime(start)} – ${fmtTime(end)}`;
+  return '';
+}
+
+function isClosingSoon(start, end, timezone) {
+  if (!start || !end) return false;
+  const nowMin = resortNowMinutes(timezone);
+  const endMin = toMin(end);
+  return endMin - nowMin <= CLOSING_SOON_MIN && endMin > nowMin;
+}
+
+function isPastClose(end, timezone) {
+  if (!end) return false;
+  const nowMin = resortNowMinutes(timezone);
+  const endMin = toMin(end);
+  return nowMin >= endMin;
 }
 
 function timeAgo(isoString) {
@@ -675,55 +1044,29 @@ function latestUpdateDate(lifts) {
 function cToF(c) { return Math.round(c * 9 / 5 + 32); }
 function cmToIn(cm) { return Math.round(cm / 2.54); }
 
-
+// =====================================================
+// Data hash & change detection (normalized structure)
+// =====================================================
 function dataHash(data) {
   const parts = [];
-  for (const r of RESORTS) {
-    const rd = data[r.id];
-    if (!rd) continue;
-    if (rd.lifts) rd.lifts.forEach(l => parts.push(l.id + ':' + l.status));
-    if (rd.weather) rd.weather.forEach(w => parts.push(w.name + ':' + w.temperature + ':' + w.snow_accumulation));
+  for (const sr of data.subResorts) {
+    if (sr.lifts) sr.lifts.forEach(l => parts.push(l.id + ':' + l.status));
+    if (sr.weather) sr.weather.forEach(w => parts.push(w.name + ':' + w.temperature + ':' + w.snow_accumulation));
   }
   return parts.join('|');
 }
 
-async function fetchJSON(url) {
-  const res = await fetch(url, { headers: { 'accept': '*/*', 'Referer': REFERER } });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-
-function fetchResortData(path, key) {
-  return Promise.all(RESORTS.map(r =>
-    fetchJSON(`${API_BASE}/${path}?${key === 'lifts' ? 'facilityType=lift&' : ''}lang=en&skiareaId=${r.id}`)
-      .then(d => [r.id, d.results || []])
-      .catch(() => [r.id, null])
-  )).then(results => Object.fromEntries(results));
-}
-
-async function fetchAllData() {
-  const [lifts, weather] = await Promise.all([
-    fetchResortData('latest-facility/backward', 'lifts'),
-    fetchResortData('latest-weather/backward', 'weather'),
-  ]);
-  const data = {};
-  for (const r of RESORTS) {
-    data[r.id] = { resort: r, lifts: lifts[r.id], weather: weather[r.id] };
-  }
-  return data;
-}
-
 function detectChanges(newData) {
+  if (!previousData) return;
   const now = Date.now();
-  for (const resortId in newData) {
-    const lifts = newData[resortId].lifts;
-    if (!lifts) continue;
-    const prev = previousData[resortId]?.lifts;
-    if (!prev) continue;
-    for (const lift of lifts) {
-      const prevLift = prev.find(p => p.id === lift.id);
+  for (const sr of newData.subResorts) {
+    if (!sr.lifts) continue;
+    const prevSr = previousData.subResorts.find(p => p.id === sr.id);
+    if (!prevSr || !prevSr.lifts) continue;
+    for (const lift of sr.lifts) {
+      const prevLift = prevSr.lifts.find(p => p.id === lift.id);
       if (prevLift && prevLift.status !== lift.status) {
-        changeLog.push({ time: now, resort: newData[resortId].resort.name, lift: lift.name, from: statusLabel(prevLift.status), to: statusLabel(lift.status) });
+        changeLog.push({ time: now, resort: sr.name, lift: lift.name, from: statusLabel(prevLift.status), to: statusLabel(lift.status) });
       }
     }
   }
@@ -750,6 +1093,17 @@ function renderChanges() {
   });
 }
 
+// =====================================================
+// Weather helpers
+// =====================================================
+const JP_EN = {
+  '吹雪': 'Snow Storm', '雪': 'Snow', '曇り': 'Cloudy', '晴れ': 'Clear',
+  '粉雪': 'Powder Snow', '圧雪': 'Packed Powder', '湿雪': 'Wet Snow',
+  '全面可能': 'All Courses Open', '一部可能': 'Partial Open', '閉鎖': 'Closed',
+  'なし': '\u2014',
+};
+function tr(s) { return s ? (JP_EN[s] || s) : '\u2014'; }
+
 function wxIcon(weather) {
   const w = (weather || '').toLowerCase();
   if (w.includes('storm') || w.includes('blizzard')) return '\u{1F32C}\u{FE0F}';
@@ -761,14 +1115,9 @@ function wxIcon(weather) {
   return '\u{1F324}\u{FE0F}';
 }
 
-const JP_EN = {
-  '吹雪': 'Snow Storm', '雪': 'Snow', '曇り': 'Cloudy', '晴れ': 'Clear',
-  '粉雪': 'Powder Snow', '圧雪': 'Packed Powder', '湿雪': 'Wet Snow',
-  '全面可能': 'All Courses Open', '一部可能': 'Partial Open', '閉鎖': 'Closed',
-  'なし': '—',
-};
-function tr(s) { return s ? (JP_EN[s] || s) : '—'; }
-
+// =====================================================
+// Render: Weather (normalized)
+// =====================================================
 function renderWeather(data) {
   const container = document.getElementById('weather-content');
   const grid = document.createElement('div');
@@ -795,14 +1144,14 @@ function renderWeather(data) {
     h4.textContent = label;
     const temp = document.createElement('div');
     temp.className = 'wx-temp';
-    temp.textContent = `${cToF(s.temperature)}\u00B0F`;
+    temp.textContent = s.temperature != null ? `${cToF(s.temperature)}\u00B0F` : '\u2014';
     const cond = document.createElement('div');
     cond.className = 'wx-condition';
     cond.textContent = `${wxIcon(tr(s.weather))} ${tr(s.weather)}`;
     station.appendChild(h4);
     station.appendChild(temp);
     station.appendChild(cond);
-    station.appendChild(createWxRow('Snow', `${cmToIn(s.snow_accumulation)}" (${s.snow_accumulation}cm)`));
+    station.appendChild(createWxRow('Snow', s.snow_accumulation != null ? `${cmToIn(s.snow_accumulation)}" (${s.snow_accumulation}cm)` : '\u2014'));
     station.appendChild(createWxRow('24h New', s.snow_accumulation_difference != null ? `${cmToIn(s.snow_accumulation_difference)}" (${s.snow_accumulation_difference}cm)` : '\u2014'));
     station.appendChild(createWxRow('Condition', tr(s.snow_state)));
     station.appendChild(createWxRow('Wind', s.wind_speed || '\u2014'));
@@ -810,19 +1159,26 @@ function renderWeather(data) {
     return station;
   }
 
-  RESORTS.forEach(r => {
+  for (const sr of data.subResorts) {
+    if (!sr.weather) continue;
+
     const card = document.createElement('div');
     card.className = 'weather-card';
     const h3 = document.createElement('h3');
-    h3.textContent = r.name;
+    h3.textContent = sr.name;
     card.appendChild(h3);
 
-    const wd = data[r.id]?.weather;
-    if (!wd || wd.length === 0) {
+    const wd = sr.weather;
+    if (wd.length === 0) {
       const p = document.createElement('p');
       p.style.color = 'var(--text-dim)';
       p.textContent = 'No data';
       card.appendChild(p);
+    } else if (wd.length === 1) {
+      const stations = document.createElement('div');
+      stations.className = 'wx-stations';
+      stations.appendChild(createStation('Conditions', wd[0]));
+      card.appendChild(stations);
     } else {
       const top = wd.find(w => /top|peak|summit/i.test(w.name)) || wd[0];
       const base = wd.find(w => /base|foot/i.test(w.name)) || wd[wd.length - 1];
@@ -833,27 +1189,31 @@ function renderWeather(data) {
       card.appendChild(stations);
     }
     grid.appendChild(card);
-  });
+  }
 
   container.innerHTML = '';
   container.appendChild(grid);
 }
 
+// =====================================================
+// Render: Lifts (normalized)
+// =====================================================
 function renderLifts(data) {
   const content = document.getElementById('lifts-content');
   const resorts = document.createElement('div');
   resorts.className = 'resorts';
+  const adapter = getActiveAdapter();
+  const hasAnyWait = data.subResorts.some(sr => (sr.lifts || []).some(l => (l.waitMinutes || 0) > 0));
 
-  RESORTS.forEach(r => {
+  for (const sr of data.subResorts) {
     const card = document.createElement('div');
     card.className = 'resort-card';
 
-    const rd = data[r.id];
-    if (!rd || !rd.lifts) {
+    if (!sr.lifts) {
       const header = document.createElement('div');
       header.className = 'resort-header';
       const h2 = document.createElement('h2');
-      h2.textContent = r.name;
+      h2.textContent = sr.name;
       const stats = document.createElement('span');
       stats.className = 'resort-stats';
       stats.textContent = 'Error';
@@ -861,10 +1221,10 @@ function renderLifts(data) {
       header.appendChild(stats);
       card.appendChild(header);
       resorts.appendChild(card);
-      return;
+      continue;
     }
 
-    const lifts = [...rd.lifts].sort((a, b) => a.name.localeCompare(b.name));
+    const lifts = [...sr.lifts].sort((a, b) => a.name.localeCompare(b.name));
     const open = lifts.filter(l => isRunning(l.status)).length;
     const updated = latestUpdateDate(lifts);
     const agoText = updated ? timeAgo(updated) : '';
@@ -872,7 +1232,7 @@ function renderLifts(data) {
     const header = document.createElement('div');
     header.className = 'resort-header';
     const h2 = document.createElement('h2');
-    h2.textContent = r.name;
+    h2.textContent = sr.name;
     if (agoText) {
       const updSpan = document.createElement('span');
       updSpan.className = 'resort-updated';
@@ -893,7 +1253,6 @@ function renderLifts(data) {
     const liftList = document.createElement('div');
     liftList.className = 'lift-list';
     lifts.forEach(l => {
-      const cls = statusClass(l.status);
       const changed = changeLog.some(c => c.lift === l.name && (Date.now() - c.time) < CHANGE_HIGHLIGHT_MS);
       const row = document.createElement('div');
       row.className = 'lift-row' + (changed ? ' changed' : '');
@@ -904,24 +1263,85 @@ function renderLifts(data) {
       name.textContent = l.name;
       const detail = document.createElement('div');
       detail.className = 'lift-detail';
-      detail.textContent = liftTimeLabel(l.start_time, l.end_time);
+      const timeLabel = liftTimeLabel(l.start_time, l.end_time, adapter.timezone, l.status);
+      detail.textContent = timeLabel;
       info.appendChild(name);
       info.appendChild(detail);
+
+      // Status column (always shown)
       const statusText = document.createElement('div');
-      statusText.className = 'lift-status-text ' + cls;
-      statusText.textContent = statusLabel(l.status);
+      const wait = l.waitMinutes || 0;
+      const pastClose = isPastClose(l.end_time, adapter.timezone);
+      const closingSoon = isRunning(l.status) && isClosingSoon(l.start_time, l.end_time, adapter.timezone);
+      if (pastClose && l.end_time) {
+        detail.textContent = `closed at ${fmtTime(l.end_time)}`;
+      }
+      if (closingSoon) {
+        const minsLeft = Math.max(0, toMin(l.end_time) - resortNowMinutes(adapter.timezone));
+        statusText.className = 'lift-status-text closing-soon';
+        statusText.textContent = `closes in ${minsLeft}m`;
+      } else if (l.vailStatus === 'Scheduled' && l.start_time) {
+        const nowMin = resortNowMinutes(adapter.timezone);
+        const startMin = toMin(l.start_time);
+        if (nowMin >= startMin && isPastClose(l.end_time, adapter.timezone)) {
+          statusText.className = 'lift-status-text closed';
+          statusText.textContent = 'closed';
+        } else {
+          statusText.className = 'lift-status-text opens';
+          statusText.textContent = `opens ${fmtTime(l.start_time)}`;
+        }
+      } else if (isRunning(l.status) && pastClose) {
+        statusText.className = 'lift-status-text standby';
+        statusText.textContent = statusLabel(l.status);
+      } else {
+        statusText.className = 'lift-status-text ' + statusClass(l.status);
+        statusText.textContent = statusLabel(l.status);
+      }
       row.appendChild(info);
       row.appendChild(statusText);
+
+      // Wait column (only if any lift in this resort has a wait)
+      if (hasAnyWait) {
+        const waitEl = document.createElement('div');
+        if (wait > 0) {
+          waitEl.className = 'lift-wait ' + waitClass(wait);
+          waitEl.textContent = `${wait}m`;
+        } else {
+          waitEl.className = 'lift-wait';
+        }
+        row.appendChild(waitEl);
+      }
+
+      // Expandable detail panel
+      const expand = document.createElement('div');
+      expand.className = 'lift-expand';
+      const bits = [];
+      if (l.start_time && l.end_time) bits.push(`${fmtTime(l.start_time)} – ${fmtTime(l.end_time)}`);
+      if (l.liftType) {
+        const typeName = l.liftType.charAt(0).toUpperCase() + l.liftType.slice(1);
+        bits.push(l.capacity ? `${typeName} · ${l.capacity} seats` : typeName);
+      }
+      if (wait > 0) bits.push(`${wait}m wait`);
+      if (l.comment) bits.push(l.comment);
+      if (l.updateDate) bits.push(`Updated ${timeAgo(l.updateDate)}`);
+      expand.textContent = bits.join(' · ');
+      row.appendChild(expand);
+
+      row.addEventListener('click', () => {
+        row.classList.toggle('expanded');
+      });
+
       liftList.appendChild(row);
     });
     card.appendChild(liftList);
     resorts.appendChild(card);
-  });
+  }
 
   content.innerHTML = '';
   content.appendChild(resorts);
 
-  const allLifts = RESORTS.flatMap(r => data[r.id]?.lifts || []);
+  // Summary bar
+  const allLifts = data.subResorts.flatMap(sr => sr.lifts || []);
   const grouped = {};
   for (const l of allLifts) {
     const css = statusClass(l.status);
@@ -955,22 +1375,32 @@ function renderLifts(data) {
   summaryBar.appendChild(totalChip);
 }
 
+// =====================================================
+// Meta / status bar
+// =====================================================
 function updateMeta(error) {
   const lastUpdate = document.getElementById('last-update');
+  const adapter = getActiveAdapter();
   if (error) {
     lastUpdate.textContent = 'Update failed';
     lastUpdate.style.color = 'var(--red)';
   } else {
     lastUpdate.style.color = '';
-    lastUpdate.textContent = `Updated ${fmtTime(jstNow())}`;
+    lastUpdate.textContent = `Updated ${fmtTime(resortNow(adapter.timezone))}`;
   }
 }
 
+// =====================================================
+// Refresh loop
+// =====================================================
 async function refresh() {
   fetchCount++;
+  const gen = refreshGeneration;
+  const adapter = getActiveAdapter();
   const errorBanner = document.getElementById('error-banner');
   try {
-    const data = await fetchAllData();
+    const data = await adapter.fetchData();
+    if (gen !== refreshGeneration) return; // resort switched during fetch, discard
     if (fetchCount > 1) detectChanges(data);
     previousData = data;
     latestData = data;
@@ -978,26 +1408,50 @@ async function refresh() {
     if (hash !== lastRenderedHash || changeLog.length > 0) {
       lastRenderedHash = hash;
       renderLifts(data);
-      renderWeather(data);
+      if (adapter.capabilities.weather) renderWeather(data);
       renderChanges();
-      updateMapLifts();
+      if (adapter.capabilities.interactiveMap && adapter.updateMapLifts) {
+        adapter.updateMapLifts(data);
+      }
     }
     updateMeta(false);
     errorBanner.classList.remove('visible');
+    consecutiveFailures = 0;
   } catch (e) {
     updateMeta(true);
     console.error('Refresh failed:', e);
     errorBanner.textContent = 'Unable to update lift data. Will retry shortly.';
     errorBanner.classList.add('visible');
+    consecutiveFailures++;
   }
-  refreshTimer = setTimeout(refresh, REFRESH_INTERVAL_MS);
+  const backoff = Math.min(REFRESH_INTERVAL_MS * Math.pow(2, consecutiveFailures), 600000);
+  refreshTimer = setTimeout(refresh, consecutiveFailures > 0 ? backoff : REFRESH_INTERVAL_MS);
 }
 
+// =====================================================
+// Init
+// =====================================================
 async function init() {
-  await loadGeoJSON();
-  initLiftData();
+  // URL routing: check pathname for resort ID
+  const path = window.location.pathname.replace(/^\//, '').toLowerCase();
+  if (path && RESORT_ADAPTERS[path]) {
+    activeResortId = path;
+    localStorage.setItem('ski-active-resort', path);
+  }
+
+  const adapter = getActiveAdapter();
+
+  updateHeader();
+  updateTabVisibility();
   renderSettings();
   refresh();
 }
+
+window.addEventListener('popstate', () => {
+  const path = window.location.pathname.replace(/^\//, '').toLowerCase();
+  if (path && RESORT_ADAPTERS[path] && path !== activeResortId) {
+    switchResort(path, true);
+  }
+});
 
 init();

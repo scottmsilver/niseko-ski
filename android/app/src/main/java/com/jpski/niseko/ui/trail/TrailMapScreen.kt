@@ -20,13 +20,13 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
-import com.jpski.niseko.ui.theme.NisekoTheme
+import com.jpski.niseko.ui.theme.SkiTheme
 import com.jpski.niseko.ui.theme.scaledSp
 
 @Composable
 fun TrailMapScreen() {
     val context = LocalContext.current
-    val colors = NisekoTheme.colors
+    val colors = SkiTheme.colors
     val prefs = remember { context.getSharedPreferences("niseko_map_state", Context.MODE_PRIVATE) }
     val bitmapPair = remember {
         val androidBitmap: Bitmap? = context.assets.open("trail-map.jpg").use { stream ->

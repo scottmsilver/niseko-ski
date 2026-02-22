@@ -22,6 +22,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.ViewModelProvider
+import com.jpski.niseko.data.ResortType
 import com.jpski.niseko.data.SettingsRepository
 import com.jpski.niseko.ui.lifts.LiftsScreen
 import com.jpski.niseko.ui.map.MapScreen
@@ -38,14 +40,15 @@ class MainActivity : ComponentActivity() {
         setContent {
             var themeOption by remember {
                 mutableStateOf(
-                    NisekoThemeOption.entries.find { it.name == settingsRepo.themeName }
-                        ?: NisekoThemeOption.LIGHT
+                    SkiThemeOption.entries.find { it.name == settingsRepo.themeName }
+                        ?: SkiThemeOption.LIGHT
                 )
             }
             var fontScale by remember { mutableFloatStateOf(settingsRepo.fontScale) }
 
-            NisekoTheme(themeOption = themeOption, fontScale = fontScale) {
-                NisekoApp(
+            SkiTheme(themeOption = themeOption, fontScale = fontScale) {
+                SkiApp(
+                    settingsRepo = settingsRepo,
                     themeOption = themeOption,
                     fontScale = fontScale,
                     onThemeSelected = {
@@ -72,23 +75,51 @@ enum class Tab(val label: String, val icon: String) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun NisekoApp(
-    viewModel: MainViewModel = viewModel(),
-    themeOption: NisekoThemeOption = NisekoThemeOption.LIGHT,
+fun SkiApp(
+    settingsRepo: SettingsRepository,
+    viewModel: MainViewModel = viewModel(
+        factory = object : ViewModelProvider.Factory {
+            override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T {
+                @Suppress("UNCHECKED_CAST")
+                return MainViewModel(settingsRepo) as T
+            }
+        }
+    ),
+    themeOption: SkiThemeOption = SkiThemeOption.LIGHT,
     fontScale: Float = 1f,
-    onThemeSelected: (NisekoThemeOption) -> Unit = {},
+    onThemeSelected: (SkiThemeOption) -> Unit = {},
     onFontScaleSelected: (Float) -> Unit = {},
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val capabilities = uiState.capabilities
+    val visibleTabs = remember(capabilities) {
+        Tab.entries.filter { tab ->
+            when (tab) {
+                Tab.MAP -> capabilities.interactiveMap
+                Tab.TRAIL -> capabilities.trailMap
+                else -> true
+            }
+        }
+    }
     var selectedTab by remember { mutableStateOf(Tab.LIFTS) }
-    val colors = NisekoTheme.colors
+    // If selected tab is no longer visible, switch to LIFTS
+    LaunchedEffect(visibleTabs) {
+        if (selectedTab !in visibleTabs) {
+            selectedTab = Tab.LIFTS
+        }
+    }
+    val colors = SkiTheme.colors
 
     Scaffold(
         topBar = {
-            NisekoTopBar(uiState.updateTime)
+            SkiTopBar(
+                resortName = uiState.activeResort.name,
+                updateTime = uiState.updateTime,
+                showYotei = uiState.activeResort.type == ResortType.NISEKO,
+            )
         },
         bottomBar = {
-            NisekoBottomBar(selectedTab) { selectedTab = it }
+            SkiBottomBar(visibleTabs, selectedTab) { selectedTab = it }
         },
         containerColor = colors.bg,
     ) { padding ->
@@ -97,7 +128,7 @@ fun NisekoApp(
                 .fillMaxSize()
                 .padding(padding),
         ) {
-            if (uiState.isLoading && uiState.data.isEmpty()) {
+            if (uiState.isLoading && uiState.data == null) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(color = colors.accent)
                 }
@@ -114,7 +145,12 @@ fun NisekoApp(
                             if (!uiState.isRefreshing) pullState.endRefresh()
                         }
                         Box(Modifier.fillMaxSize().nestedScroll(pullState.nestedScrollConnection)) {
-                            LiftsScreen(uiState.data, uiState.changes)
+                            LiftsScreen(
+                                subResorts = uiState.data?.subResorts ?: emptyList(),
+                                changes = uiState.changes,
+                                capabilities = capabilities,
+                                timezone = uiState.activeResort.timezone,
+                            )
                             PullToRefreshContainer(state = pullState, modifier = Modifier.align(Alignment.TopCenter), containerColor = colors.card, contentColor = colors.accent)
                         }
                     }
@@ -129,17 +165,19 @@ fun NisekoApp(
                             if (!uiState.isRefreshing) pullState.endRefresh()
                         }
                         Box(Modifier.fillMaxSize().nestedScroll(pullState.nestedScrollConnection)) {
-                            WeatherScreen(uiState.data)
+                            WeatherScreen(uiState.data?.subResorts ?: emptyList())
                             PullToRefreshContainer(state = pullState, modifier = Modifier.align(Alignment.TopCenter), containerColor = colors.card, contentColor = colors.accent)
                         }
                     }
-                    Tab.MAP -> MapScreen(uiState.data)
+                    Tab.MAP -> MapScreen()
                     Tab.TRAIL -> TrailMapScreen()
                     Tab.SETTINGS -> SettingsScreen(
                         currentTheme = themeOption,
                         currentFontScale = fontScale,
                         onThemeSelected = onThemeSelected,
                         onFontScaleSelected = onFontScaleSelected,
+                        activeResortId = uiState.activeResort.id,
+                        onResortSelected = { viewModel.switchResort(it) },
                     )
                 }
             }
@@ -161,8 +199,8 @@ fun NisekoApp(
 }
 
 @Composable
-private fun NisekoTopBar(updateTime: String) {
-    val colors = NisekoTheme.colors
+private fun SkiTopBar(resortName: String, updateTime: String, showYotei: Boolean) {
+    val colors = SkiTheme.colors
 
     Box(
         modifier = Modifier
@@ -172,22 +210,24 @@ private fun NisekoTopBar(updateTime: String) {
             .statusBarsPadding()
             .padding(vertical = 8.dp),
     ) {
-        Image(
-            painter = painterResource(R.drawable.yotei),
-            contentDescription = null,
-            contentScale = ContentScale.FillHeight,
-            colorFilter = ColorFilter.tint(colors.accent.copy(alpha = 0.4f)),
-            modifier = Modifier
-                .align(Alignment.CenterStart)
-                .fillMaxHeight()
-                .padding(start = 4.dp),
-        )
+        if (showYotei) {
+            Image(
+                painter = painterResource(R.drawable.yotei),
+                contentDescription = null,
+                contentScale = ContentScale.FillHeight,
+                colorFilter = ColorFilter.tint(colors.accent.copy(alpha = 0.4f)),
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .fillMaxHeight()
+                    .padding(start = 4.dp),
+            )
+        }
         Column(
             modifier = Modifier.fillMaxWidth(),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
-                "Niseko United",
+                resortName,
                 fontSize = 20.scaledSp,
                 fontWeight = FontWeight.Bold,
                 color = colors.accent,
@@ -203,15 +243,15 @@ private fun NisekoTopBar(updateTime: String) {
 }
 
 @Composable
-private fun NisekoBottomBar(selectedTab: Tab, onTabSelected: (Tab) -> Unit) {
-    val colors = NisekoTheme.colors
+private fun SkiBottomBar(visibleTabs: List<Tab>, selectedTab: Tab, onTabSelected: (Tab) -> Unit) {
+    val colors = SkiTheme.colors
 
     NavigationBar(
         containerColor = colors.tabBg,
         contentColor = colors.textDim,
         tonalElevation = 0.dp,
     ) {
-        Tab.entries.forEach { tab ->
+        visibleTabs.forEach { tab ->
             NavigationBarItem(
                 selected = selectedTab == tab,
                 onClick = { onTabSelected(tab) },

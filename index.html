@@ -14,9 +14,9 @@
 <script>
   // Apply saved theme/font before render to avoid flash
   (function() {
-    var theme = localStorage.getItem('niseko-theme');
+    var theme = localStorage.getItem('ski-theme');
     if (theme && theme !== 'light') document.documentElement.setAttribute('data-theme', theme);
-    var scale = localStorage.getItem('niseko-font-scale');
+    var scale = localStorage.getItem('ski-font-scale');
     if (scale) document.documentElement.style.setProperty('--font-scale', scale);
   })();
 </script>
@@ -76,6 +76,8 @@
 <!-- Settings Tab -->
 <div class="tab-panel" id="panel-settings">
   <div class="settings-content">
+    <h2>Resort</h2>
+    <div class="resort-picker" id="resort-picker"></div>
     <h2>Theme</h2>
     <div class="theme-picker" id="theme-picker"></div>
     <h2>Font Size</h2>

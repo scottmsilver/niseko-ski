@@ -6,7 +6,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import com.jpski.niseko.data.LiftStatus
 
-data class NisekoColors(
+data class SkiColors(
     val bg: Color,
     val card: Color,
     val cardBorder: Color,
@@ -23,11 +23,16 @@ data class NisekoColors(
     val error: Color,
     val tabBg: Color,
     val isDark: Boolean,
+    val statusOpens: Color,
+    val statusClosingSoon: Color,
+    val waitLow: Color,
+    val waitMid: Color,
+    val waitHigh: Color,
 )
 
-val LocalNisekoColors = staticCompositionLocalOf { LightPalette }
+val LocalSkiColors = staticCompositionLocalOf { LightPalette }
 
-val LightPalette = NisekoColors(
+val LightPalette = SkiColors(
     bg = Color(0xFFF5F5F7),
     card = Color(0xFFFFFFFF),
     cardBorder = Color(0xFFE2E2E7),
@@ -38,15 +43,20 @@ val LightPalette = NisekoColors(
     accentTertiary = Color(0xFF2EBDA0),
     statusOpen = Color(0xFF34C759),
     statusSlowed = Color(0xFFC49000),
-    statusStandby = Color(0xFF4A90D9),
+    statusStandby = Color(0xFFC49000),
     statusOnHold = Color(0xFFD47A1A),
-    statusClosed = Color(0xFF7C6FD4),
+    statusClosed = Color(0xFFFF3B30),
     error = Color(0xFFFF3B30),
     tabBg = Color(0xFFFFFFFF),
     isDark = false,
+    statusOpens = Color(0xFF7C6FD4),
+    statusClosingSoon = Color(0xFF2EBDA0),
+    waitLow = Color(0xFF34C759),
+    waitMid = Color(0xFFC49000),
+    waitHigh = Color(0xFFFF3B30),
 )
 
-val DarkPalette = NisekoColors(
+val DarkPalette = SkiColors(
     bg = Color(0xFF1A1A2E),
     card = Color(0xFF16213E),
     cardBorder = Color(0xFF2A2F5B),
@@ -57,15 +67,20 @@ val DarkPalette = NisekoColors(
     accentTertiary = Color(0xFF55EFC4),
     statusOpen = Color(0xFF7BED9F),
     statusSlowed = Color(0xFFECCC68),
-    statusStandby = Color(0xFF70A1FF),
+    statusStandby = Color(0xFFECCC68),
     statusOnHold = Color(0xFFFF9F43),
-    statusClosed = Color(0xFFA29BFE),
+    statusClosed = Color(0xFFFF6B81),
     error = Color(0xFFFF6B81),
     tabBg = Color(0xFF0F0F23),
     isDark = true,
+    statusOpens = Color(0xFFA29BFE),
+    statusClosingSoon = Color(0xFF55EFC4),
+    waitLow = Color(0xFF7BED9F),
+    waitMid = Color(0xFFECCC68),
+    waitHigh = Color(0xFFFF6B81),
 )
 
-val PowderPalette = NisekoColors(
+val PowderPalette = SkiColors(
     bg = Color(0xFF0B1628),
     card = Color(0xFF0F1F3A),
     cardBorder = Color(0xFF1C3366),
@@ -76,15 +91,20 @@ val PowderPalette = NisekoColors(
     accentTertiary = Color(0xFF4FD1C5),
     statusOpen = Color(0xFF7BED9F),
     statusSlowed = Color(0xFFFFD93D),
-    statusStandby = Color(0xFF5CB8FF),
+    statusStandby = Color(0xFFFFD93D),
     statusOnHold = Color(0xFFFF9F43),
-    statusClosed = Color(0xFF88A4FF),
+    statusClosed = Color(0xFFFF6B6B),
     error = Color(0xFFFF6B6B),
     tabBg = Color(0xFF060E1C),
     isDark = true,
+    statusOpens = Color(0xFF88A4FF),
+    statusClosingSoon = Color(0xFF4FD1C5),
+    waitLow = Color(0xFF7BED9F),
+    waitMid = Color(0xFFFFD93D),
+    waitHigh = Color(0xFFFF6B6B),
 )
 
-val SakuraPalette = NisekoColors(
+val SakuraPalette = SkiColors(
     bg = Color(0xFF1E0A14),
     card = Color(0xFF2D1423),
     cardBorder = Color(0xFF4A2040),
@@ -95,15 +115,20 @@ val SakuraPalette = NisekoColors(
     accentTertiary = Color(0xFFF0B3D0),
     statusOpen = Color(0xFF7BED9F),
     statusSlowed = Color(0xFFFFD93D),
-    statusStandby = Color(0xFF85B8FF),
+    statusStandby = Color(0xFFFFD93D),
     statusOnHold = Color(0xFFFF9F43),
-    statusClosed = Color(0xFFC77DBA),
+    statusClosed = Color(0xFFFF6B81),
     error = Color(0xFFFF6B81),
     tabBg = Color(0xFF150812),
     isDark = true,
+    statusOpens = Color(0xFFC77DBA),
+    statusClosingSoon = Color(0xFFF0B3D0),
+    waitLow = Color(0xFF7BED9F),
+    waitMid = Color(0xFFFFD93D),
+    waitHigh = Color(0xFFFF6B81),
 )
 
-val SunsetPalette = NisekoColors(
+val SunsetPalette = SkiColors(
     bg = Color(0xFF1A0F05),
     card = Color(0xFF2E1A0A),
     cardBorder = Color(0xFF4D3018),
@@ -114,19 +139,24 @@ val SunsetPalette = NisekoColors(
     accentTertiary = Color(0xFFFF6B6B),
     statusOpen = Color(0xFF7BED9F),
     statusSlowed = Color(0xFFFFD93D),
-    statusStandby = Color(0xFF70A1FF),
+    statusStandby = Color(0xFFFFD93D),
     statusOnHold = Color(0xFFFF8C42),
-    statusClosed = Color(0xFFC49CDE),
+    statusClosed = Color(0xFFFF6B81),
     error = Color(0xFFFF6B81),
     tabBg = Color(0xFF120A03),
     isDark = true,
+    statusOpens = Color(0xFFC49CDE),
+    statusClosingSoon = Color(0xFFFFB347),
+    waitLow = Color(0xFF7BED9F),
+    waitMid = Color(0xFFFFD93D),
+    waitHigh = Color(0xFFFF6B81),
 )
 
 val LiftStatus.color: Color
     @Composable
     @ReadOnlyComposable
     get() {
-        val c = LocalNisekoColors.current
+        val c = LocalSkiColors.current
         return when (this) {
             LiftStatus.OPERATING -> c.statusOpen
             LiftStatus.OPERATION_SLOWED -> c.statusSlowed

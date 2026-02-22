@@ -13,7 +13,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
 import androidx.core.view.WindowCompat
 
-enum class NisekoThemeOption(val label: String, val palette: NisekoColors) {
+enum class SkiThemeOption(val label: String, val palette: SkiColors) {
     LIGHT("Light", LightPalette),
     DARK("Dark", DarkPalette),
     POWDER("Powder", PowderPalette),
@@ -21,16 +21,16 @@ enum class NisekoThemeOption(val label: String, val palette: NisekoColors) {
     SUNSET("Sunset", SunsetPalette),
 }
 
-object NisekoTheme {
-    val colors: NisekoColors
+object SkiTheme {
+    val colors: SkiColors
         @Composable
         @ReadOnlyComposable
-        get() = LocalNisekoColors.current
+        get() = LocalSkiColors.current
 }
 
 @Composable
-fun NisekoTheme(
-    themeOption: NisekoThemeOption = NisekoThemeOption.LIGHT,
+fun SkiTheme(
+    themeOption: SkiThemeOption = SkiThemeOption.LIGHT,
     fontScale: Float = 1f,
     content: @Composable () -> Unit,
 ) {
@@ -79,12 +79,12 @@ fun NisekoTheme(
     }
 
     CompositionLocalProvider(
-        LocalNisekoColors provides colors,
+        LocalSkiColors provides colors,
         LocalFontScale provides fontScale,
     ) {
         MaterialTheme(
             colorScheme = colorScheme,
-            typography = nisekoTypography(fontScale),
+            typography = skiTypography(fontScale),
         ) {
             ProvideTextStyle(
                 value = TextStyle(fontFamily = Nunito),

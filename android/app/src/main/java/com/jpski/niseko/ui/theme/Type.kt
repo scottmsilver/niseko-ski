@@ -26,7 +26,7 @@ val Int.scaledSp: TextUnit
     @ReadOnlyComposable
     get() = (this * LocalFontScale.current).sp
 
-fun nisekoTypography(scale: Float = 1f): Typography {
+fun skiTypography(scale: Float = 1f): Typography {
     fun Float.s() = (this * scale).sp
     return Typography(
         displaySmall = TextStyle(fontFamily = Nunito, fontWeight = FontWeight.Bold, fontSize = 28f.s()),

@@ -1,14 +1,18 @@
 package com.jpski.niseko.ui.lifts
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -18,21 +22,26 @@ import androidx.compose.ui.unit.dp
 import com.jpski.niseko.data.*
 import com.jpski.niseko.ui.theme.*
 import com.jpski.niseko.util.TimeUtils
+import java.time.ZoneId
+import java.util.Locale
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun LiftsScreen(
-    data: Map<String, ResortData>,
+    subResorts: List<SubResortData>,
     changes: List<ChangeEntry>,
+    capabilities: Capabilities,
+    timezone: String,
 ) {
-    val resorts = Resort.ALL
+    val tz = remember(timezone) { try { ZoneId.of(timezone) } catch (_: Exception) { ZoneId.of("Asia/Tokyo") } }
+    var expandedLiftId by remember { mutableStateOf<Int?>(null) }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp),
     ) {
         item {
-            SummaryBar(data, resorts)
+            SummaryBar(subResorts)
         }
 
         if (changes.isNotEmpty()) {
@@ -41,28 +50,37 @@ fun LiftsScreen(
             }
         }
 
-        for (resort in resorts) {
-            val rd = data[resort.id]
-            if (rd == null || rd.lifts == null) {
-                item(key = "resort-${resort.id}") {
-                    ResortErrorCard(resort.name)
+        val hasAnyWait = subResorts.any { sr -> sr.lifts?.any { it.waitMinutes > 0 } == true }
+        for (sr in subResorts) {
+            if (sr.lifts == null) {
+                item(key = "resort-${sr.id}") {
+                    ResortErrorCard(sr.name)
                 }
             } else {
-                val sortedLifts = rd.lifts.sortedBy { it.name }
-                stickyHeader(key = "header-${resort.id}") {
+                val sortedLifts = sr.lifts.sortedBy { it.name }
+                stickyHeader(key = "header-${sr.id}") {
                     ResortHeader(
-                        name = resort.name,
-                        openCount = rd.lifts.count { it.isRunning },
-                        totalCount = rd.lifts.size,
-                        agoText = TimeUtils.timeAgo(TimeUtils.latestUpdateDate(rd.lifts)),
+                        name = sr.name,
+                        openCount = sr.lifts.count { it.isRunning },
+                        totalCount = sr.lifts.size,
+                        agoText = TimeUtils.timeAgo(TimeUtils.latestUpdateDate(sr.lifts)),
                     )
                 }
                 items(sortedLifts, key = { "lift-${it.id}" }) { lift ->
                     val isChanged = changes.any {
                         it.liftName == lift.name && (System.currentTimeMillis() - it.time) < 600_000
                     }
-                    LiftRow(lift, isChanged)
-                    HorizontalDivider(color = NisekoTheme.colors.cardBorder.copy(alpha = 0.5f), thickness = 0.5.dp)
+                    LiftRow(
+                        lift = lift,
+                        isChanged = isChanged,
+                        isExpanded = expandedLiftId == lift.id,
+                        onToggle = {
+                            expandedLiftId = if (expandedLiftId == lift.id) null else lift.id
+                        },
+                        timezone = tz,
+                        hasAnyWait = hasAnyWait,
+                    )
+                    HorizontalDivider(color = SkiTheme.colors.cardBorder.copy(alpha = 0.5f), thickness = 0.5.dp)
                 }
             }
         }
@@ -72,8 +90,8 @@ fun LiftsScreen(
 }
 
 @Composable
-private fun SummaryBar(data: Map<String, ResortData>, resorts: List<Resort>) {
-    val allLifts = resorts.flatMap { data[it.id]?.lifts ?: emptyList() }
+private fun SummaryBar(subResorts: List<SubResortData>) {
+    val allLifts = subResorts.flatMap { it.lifts ?: emptyList() }
     val counts = LiftStatus.counts(allLifts)
     val chips = listOf(
         LiftStatus.OPERATING to true,
@@ -97,13 +115,13 @@ private fun SummaryBar(data: Map<String, ResortData>, resorts: List<Resort>) {
                 SummaryChip("$count", status.chipLabel, status.color)
             }
         }
-        SummaryChip("${allLifts.size}", "Total", NisekoTheme.colors.text)
+        SummaryChip("${allLifts.size}", "Total", SkiTheme.colors.text)
     }
 }
 
 @Composable
 private fun SummaryChip(count: String, label: String, color: androidx.compose.ui.graphics.Color) {
-    val colors = NisekoTheme.colors
+    val colors = SkiTheme.colors
 
     Row(
         modifier = Modifier
@@ -120,7 +138,7 @@ private fun SummaryChip(count: String, label: String, color: androidx.compose.ui
 
 @Composable
 private fun ChangesBanner(changes: List<ChangeEntry>) {
-    val colors = NisekoTheme.colors
+    val colors = SkiTheme.colors
 
     Column(
         modifier = Modifier
@@ -151,7 +169,7 @@ private fun ChangesBanner(changes: List<ChangeEntry>) {
 
 @Composable
 private fun ResortHeader(name: String, openCount: Int, totalCount: Int, agoText: String = "") {
-    val colors = NisekoTheme.colors
+    val colors = SkiTheme.colors
 
     Row(
         modifier = Modifier
@@ -179,7 +197,7 @@ private fun ResortHeader(name: String, openCount: Int, totalCount: Int, agoText:
 
 @Composable
 private fun ResortErrorCard(name: String) {
-    val colors = NisekoTheme.colors
+    val colors = SkiTheme.colors
 
     Row(
         modifier = Modifier
@@ -194,13 +212,31 @@ private fun ResortErrorCard(name: String) {
 }
 
 @Composable
-private fun LiftRow(lift: LiftInfo, isChanged: Boolean) {
-    val colors = NisekoTheme.colors
+private fun waitColor(waitMinutes: Int): androidx.compose.ui.graphics.Color {
+    val colors = SkiTheme.colors
+    return when {
+        waitMinutes <= 5 -> colors.waitLow
+        waitMinutes <= 15 -> colors.waitMid
+        else -> colors.waitHigh
+    }
+}
+
+@Composable
+private fun LiftRow(
+    lift: LiftInfo,
+    isChanged: Boolean,
+    isExpanded: Boolean,
+    onToggle: () -> Unit,
+    timezone: ZoneId,
+    hasAnyWait: Boolean,
+) {
+    val colors = SkiTheme.colors
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .background(if (isChanged) colors.statusOnHold.copy(alpha = 0.15f) else colors.bg)
+            .clickable(onClick = onToggle)
             .padding(horizontal = 12.dp, vertical = 5.dp),
     ) {
         Text(lift.name, color = colors.text, fontSize = 13.scaledSp, fontWeight = FontWeight.Medium)
@@ -209,18 +245,122 @@ private fun LiftRow(lift: LiftInfo, isChanged: Boolean) {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                TimeUtils.liftTimeLabel(lift.startTime, lift.endTime),
-                color = colors.textDim,
-                fontSize = 10.scaledSp,
-            )
-            Text(
-                lift.liftStatus.label.uppercase(),
-                color = lift.liftStatus.color,
-                fontSize = 10.scaledSp,
-                fontWeight = FontWeight.SemiBold,
-                textAlign = TextAlign.End,
-            )
+            val pastClose = TimeUtils.isPastClose(lift.endTime, timezone)
+            val timeLabel = TimeUtils.liftTimeLabel(lift.startTime, lift.endTime, timezone, lift.status)
+            val detailText = if (pastClose && lift.endTime.isNotBlank()) {
+                "closed at ${TimeUtils.fmtTime(lift.endTime)}"
+            } else if (timeLabel.isNotEmpty()) {
+                timeLabel
+            } else {
+                "${TimeUtils.fmtTime(lift.startTime)} – ${TimeUtils.fmtTime(lift.endTime)}"
+            }
+            Text(detailText, color = colors.textDim, fontSize = 10.scaledSp, modifier = Modifier.weight(1f))
+
+            // Status column
+            val closingSoon = lift.isRunning && TimeUtils.isClosingSoon(lift.startTime, lift.endTime, timezone)
+            if (closingSoon) {
+                val minsLeft = maxOf(0, TimeUtils.toMin(lift.endTime) - TimeUtils.nowMinutes(timezone))
+                Text(
+                    "closes in ${minsLeft}m",
+                    color = colors.statusClosingSoon,
+                    fontSize = 10.scaledSp,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.End,
+                )
+            } else if (lift.vailStatus == "Scheduled" && lift.startTime.isNotBlank()) {
+                val nowMin = TimeUtils.nowMinutes(timezone)
+                val startMin = TimeUtils.toMin(lift.startTime)
+                if (nowMin >= startMin && pastClose) {
+                    Text(
+                        "closed",
+                        color = colors.statusClosed,
+                        fontSize = 10.scaledSp,
+                        fontWeight = FontWeight.SemiBold,
+                        textAlign = TextAlign.End,
+                    )
+                } else {
+                    Text(
+                        "opens ${TimeUtils.fmtTime(lift.startTime)}",
+                        color = colors.statusOpens,
+                        fontSize = 10.scaledSp,
+                        fontWeight = FontWeight.SemiBold,
+                        textAlign = TextAlign.End,
+                    )
+                }
+            } else if (lift.isRunning && pastClose) {
+                Text(
+                    lift.liftStatus.label,
+                    color = colors.statusStandby,
+                    fontSize = 10.scaledSp,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.End,
+                )
+            } else {
+                Text(
+                    lift.liftStatus.label,
+                    color = lift.liftStatus.color,
+                    fontSize = 10.scaledSp,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.End,
+                )
+            }
+
+            // Wait column (only if any lift in this resort has waits)
+            if (hasAnyWait) {
+                Text(
+                    if (lift.waitMinutes > 0) "${lift.waitMinutes}m" else "",
+                    color = if (lift.waitMinutes > 0) waitColor(lift.waitMinutes) else colors.textDim,
+                    fontSize = 10.scaledSp,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.End,
+                    modifier = Modifier.width(28.dp),
+                )
+            }
         }
+
+        AnimatedVisibility(
+            visible = isExpanded,
+            enter = expandVertically(),
+            exit = shrinkVertically(),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp, bottom = 2.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(colors.card)
+                    .padding(8.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                DetailRow("Hours", "${TimeUtils.fmtTime(lift.startTime)} – ${TimeUtils.fmtTime(lift.endTime)}")
+                lift.liftType?.let { type ->
+                    DetailRow("Type", type.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() })
+                }
+                lift.capacity?.let { cap ->
+                    DetailRow("Capacity", "$cap seats")
+                }
+                if (lift.waitMinutes > 0) {
+                    DetailRow("Wait", "${lift.waitMinutes}m wait")
+                }
+                lift.comment?.let { comment ->
+                    DetailRow("Note", comment)
+                }
+                lift.updateDate?.let { updated ->
+                    DetailRow("Updated", TimeUtils.timeAgo(updated))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetailRow(label: String, value: String) {
+    val colors = SkiTheme.colors
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(label, color = colors.textDim, fontSize = 10.scaledSp)
+        Text(value, color = colors.text, fontSize = 10.scaledSp)
     }
 }

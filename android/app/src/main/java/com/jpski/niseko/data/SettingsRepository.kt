@@ -1,12 +1,12 @@
 package com.jpski.niseko.data
 
 import android.content.Context
-import com.jpski.niseko.ui.theme.NisekoThemeOption
+import com.jpski.niseko.ui.theme.SkiThemeOption
 
 class SettingsRepository(context: Context) {
-    private val prefs = context.getSharedPreferences("niseko_settings", Context.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences("ski_settings", Context.MODE_PRIVATE)
 
-    private var _themeName: String = prefs.getString("theme", NisekoThemeOption.LIGHT.name) ?: NisekoThemeOption.LIGHT.name
+    private var _themeName: String = prefs.getString("theme", SkiThemeOption.LIGHT.name) ?: SkiThemeOption.LIGHT.name
     private var _fontScale: Float = prefs.getFloat("font_scale", 1f)
 
     var themeName: String
@@ -22,4 +22,8 @@ class SettingsRepository(context: Context) {
             _fontScale = value
             prefs.edit().putFloat("font_scale", value).apply()
         }
+
+    var activeResortId: String
+        get() = prefs.getString("active_resort", "niseko") ?: "niseko"
+        set(value) { prefs.edit().putString("active_resort", value).apply() }
 }

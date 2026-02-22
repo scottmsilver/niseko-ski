@@ -5,7 +5,7 @@ import java.time.ZoneId
 import java.time.ZonedDateTime
 
 object TimeUtils {
-    private val JST = ZoneId.of("Asia/Tokyo")
+    private const val CLOSING_SOON_MIN = 90
 
     fun fmtTime(timeStr: String): String {
         val parts = timeStr.split(":")
@@ -16,17 +16,35 @@ object TimeUtils {
         return if (m == 0) "$hr$suffix" else "$hr:${m.toString().padStart(2, '0')}$suffix"
     }
 
-    fun liftTimeLabel(startTime: String, endTime: String): String {
-        val nowMin = ZonedDateTime.now(JST).let { it.hour * 60 + it.minute }
-        return if (nowMin in parseMinutes(startTime) until parseMinutes(endTime)) {
-            "til ${fmtTime(endTime)}"
-        } else {
-            "${fmtTime(startTime)} – ${fmtTime(endTime)}"
+    fun liftTimeLabel(startTime: String, endTime: String, timezone: ZoneId, status: String): String {
+        if (!isRunning(status)) return ""
+        if (startTime.isBlank() || endTime.isBlank()) return ""
+
+        val nowMin = ZonedDateTime.now(timezone).let { it.hour * 60 + it.minute }
+        val startMin = parseMinutes(startTime)
+        val endMin = parseMinutes(endTime)
+
+        if (nowMin < startMin) return "opens ${fmtTime(startTime)}"
+        if (endMin - nowMin <= CLOSING_SOON_MIN && endMin > nowMin) {
+            return "${fmtTime(startTime)} – ${fmtTime(endTime)}"
         }
+        return ""
     }
 
-    fun currentTimeFormatted(): String {
-        val now = ZonedDateTime.now(JST)
+    fun isClosingSoon(startTime: String, endTime: String, timezone: ZoneId): Boolean {
+        if (startTime.isBlank() || endTime.isBlank()) return false
+        val nowMin = nowMinutes(timezone)
+        val endMin = parseMinutes(endTime)
+        return endMin - nowMin <= CLOSING_SOON_MIN && endMin > nowMin
+    }
+
+    fun isPastClose(endTime: String, timezone: ZoneId): Boolean {
+        if (endTime.isBlank()) return false
+        return nowMinutes(timezone) >= parseMinutes(endTime)
+    }
+
+    fun currentTimeFormatted(timezone: ZoneId): String {
+        val now = ZonedDateTime.now(timezone)
         return "Updated ${fmtTime("${now.hour}:${now.minute}")}"
     }
 
@@ -34,6 +52,11 @@ object TimeUtils {
         val parts = timeStr.split(":")
         return (parts[0].toIntOrNull() ?: 0) * 60 + (parts.getOrNull(1)?.toIntOrNull() ?: 0)
     }
+
+    fun toMin(timeStr: String): Int = parseMinutes(timeStr)
+
+    fun nowMinutes(timezone: ZoneId): Int =
+        ZonedDateTime.now(timezone).let { it.hour * 60 + it.minute }
 
     fun cToF(c: Double): Int = Math.round(c * 9.0 / 5.0 + 32.0).toInt()
     fun cmToIn(cm: Double): Int = Math.round(cm / 2.54).toInt()
@@ -54,4 +77,7 @@ object TimeUtils {
 
     fun latestUpdateDate(lifts: List<LiftInfo>): String? =
         lifts.mapNotNull { it.updateDate?.takeIf { d -> d.isNotBlank() } }.maxOrNull()
+
+    private fun isRunning(status: String): Boolean =
+        status == "OPERATING" || status == "OPERATION_SLOWED"
 }

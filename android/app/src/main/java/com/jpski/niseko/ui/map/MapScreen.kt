@@ -15,10 +15,9 @@ import org.osmdroid.events.ZoomEvent
 import org.osmdroid.tileprovider.tilesource.XYTileSource
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
-import com.jpski.niseko.data.ResortData
 
 @Composable
-fun MapScreen(data: Map<String, ResortData>) {
+fun MapScreen() {
     Configuration.getInstance().userAgentValue = "com.jpski.niseko"
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("niseko_map_state", Context.MODE_PRIVATE) }
