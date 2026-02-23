@@ -540,6 +540,91 @@ const TEST_CASES = [
     rendered: { left: '', right: 'open', rightCls: 'operating' },
     noWaitColumn: true,
   },
+
+  // ---- Snowbird-style (sector grouping, hours like "9 am - 4 pm") ----
+  {
+    group: 'Snowbird / Alta (Ikon Pass)',
+    name: 'Snowbird — expected (closed, scheduled, before open)',
+    lift: { name: 'Aerial Tram', status: 'CLOSED', scheduled: true, start_time: '09:00', end_time: '15:45', waitMinutes: null },
+    nowMin: toMin('07:00'),
+    expect: { statusText: 'opens 9:00a', waitText: '' },
+    rendered: { left: '', right: '9:00a', rightCls: 'opens' },
+    noWaitColumn: true,
+  },
+  {
+    name: 'Snowbird — open lift, normal hours',
+    lift: { name: 'Chickadee', status: 'OPERATING', scheduled: false, start_time: '09:00', end_time: '17:00', waitMinutes: null },
+    nowMin: toMin('12:00'),
+    expect: { statusText: 'open', waitText: '' },
+    rendered: { left: '', right: 'open', rightCls: 'operating' },
+    noWaitColumn: true,
+  },
+  {
+    name: 'Snowbird — open lift, closing soon',
+    lift: { name: 'Peruvian', status: 'OPERATING', scheduled: false, start_time: '09:00', end_time: '16:00', waitMinutes: null },
+    nowMin: toMin('15:30'),
+    expect: { statusText: 'closes in 30m', waitText: '' },
+    rendered: { left: '', right: 'closes in 30m', rightCls: 'closing-soon' },
+    noWaitColumn: true,
+  },
+  {
+    name: 'Alta — open boolean true',
+    lift: { name: 'Collins', status: 'OPERATING', scheduled: false, start_time: '09:15', end_time: '16:30', waitMinutes: null },
+    nowMin: toMin('11:00'),
+    expect: { statusText: 'open', waitText: '' },
+    rendered: { left: '', right: 'open', rightCls: 'operating' },
+    noWaitColumn: true,
+  },
+  {
+    name: 'Alta — closed with opening time (scheduled)',
+    lift: { name: 'Supreme', status: 'CLOSED', scheduled: true, start_time: '09:15', end_time: '15:30', waitMinutes: null },
+    nowMin: toMin('07:00'),
+    expect: { statusText: 'opens 9:15a', waitText: '' },
+    rendered: { left: '', right: '9:15a', rightCls: 'opens' },
+    noWaitColumn: true,
+  },
+  {
+    name: 'Alta — closed, no opening time (off-season)',
+    lift: { name: 'Wildcat', status: 'CLOSED', scheduled: false, start_time: null, end_time: null, waitMinutes: null },
+    nowMin: toMin('12:00'),
+    expect: { statusText: 'closed', waitText: '' },
+    rendered: { left: '', right: 'closed', rightCls: 'closed' },
+    noWaitColumn: true,
+  },
+];
+
+// =====================================================
+// to24() — AM/PM to 24h conversion (ported from app.js)
+// =====================================================
+function to24(s) {
+  const m = s.match(/(\d+)(?::(\d+))?\s*(AM|PM)/i);
+  if (!m) return null;
+  let h = parseInt(m[1], 10);
+  const min = m[2] || '00';
+  const ampm = m[3].toUpperCase();
+  if (ampm === 'PM' && h !== 12) h += 12;
+  if (ampm === 'AM' && h === 12) h = 0;
+  return String(h).padStart(2, '0') + ':' + min;
+}
+
+// =====================================================
+// to24() tests
+// =====================================================
+const TO24_TESTS = [
+  { input: '9:00AM', expected: '09:00', name: '9:00AM with colon' },
+  { input: '9:00 AM', expected: '09:00', name: '9:00 AM with space' },
+  { input: '9 am', expected: '09:00', name: '9 am (no colon, no minutes)' },
+  { input: '9 AM', expected: '09:00', name: '9 AM uppercase' },
+  { input: '12:00PM', expected: '12:00', name: '12:00PM (noon)' },
+  { input: '12:00AM', expected: '00:00', name: '12:00AM (midnight)' },
+  { input: '12 pm', expected: '12:00', name: '12 pm (noon, no colon)' },
+  { input: '12 am', expected: '00:00', name: '12 am (midnight, no colon)' },
+  { input: '4:30PM', expected: '16:30', name: '4:30PM' },
+  { input: '4:30 pm', expected: '16:30', name: '4:30 pm with space' },
+  { input: '3:45 pm', expected: '15:45', name: '3:45 pm (Snowbird tram close)' },
+  { input: '5 pm', expected: '17:00', name: '5 pm (no minutes)' },
+  { input: '11:59 PM', expected: '23:59', name: '11:59 PM edge' },
+  { input: '1:00 AM', expected: '01:00', name: '1:00 AM early morning' },
 ];
 
 // =====================================================
@@ -704,6 +789,34 @@ function runTests() {
       <td class="mono" style="font-size:11px">${waitVals}</td>
       <td>${ct.expect ? 'show' : 'hide'}</td>
       <td>${actual ? 'show' : 'hide'}</td>
+      <td style="font-weight:600">${pass ? '<span style="color:#2e7d32">PASS</span>' : '<span style="color:#c62828">FAIL</span>'}</td>
+    </tr>`;
+  }
+
+  html += '</table>';
+
+  // --- to24() conversion tests ---
+  html += `<h2>to24() AM/PM Conversion</h2>
+  <p class="subtitle" style="margin-bottom:12px">Converts "9:00AM", "4:30 pm", "9 am" → 24h "HH:MM"</p>
+  <table>
+    <tr>
+      <th style="width:30%">Test Case</th>
+      <th>Input</th>
+      <th>Expected</th>
+      <th>Actual</th>
+      <th>Result</th>
+    </tr>`;
+
+  for (const tt of TO24_TESTS) {
+    const actual = to24(tt.input);
+    const pass = actual === tt.expected;
+    if (pass) passCount++; else failCount++;
+
+    html += `<tr class="${pass ? 'pass' : 'fail'}">
+      <td>${tt.name}</td>
+      <td class="mono">${tt.input}</td>
+      <td class="mono">${tt.expected}</td>
+      <td class="mono">${actual === null ? 'null' : actual}</td>
       <td style="font-weight:600">${pass ? '<span style="color:#2e7d32">PASS</span>' : '<span style="color:#c62828">FAIL</span>'}</td>
     </tr>`;
   }

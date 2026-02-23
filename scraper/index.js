@@ -1,4 +1,5 @@
 const puppeteer = require('puppeteer');
+const https = require('https');
 const http = require('http');
 
 // ---------------------------------------------------------------------------
@@ -220,6 +221,60 @@ setInterval(() => {
 }, CLEANUP_INTERVAL_MS);
 
 // ---------------------------------------------------------------------------
+// Alta: lightweight HTML fetch + regex extraction (no Puppeteer)
+// ---------------------------------------------------------------------------
+const ALTA_URL = 'https://www.alta.com/lift-terrain-status';
+let altaCache = { data: null, fetchedAt: 0, fetching: false };
+
+function fetchAltaHTML() {
+  return new Promise((resolve, reject) => {
+    const req = https.get(ALTA_URL, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
+      if (res.statusCode !== 200) {
+        res.resume();
+        return reject(new Error(`Alta HTTP ${res.statusCode}`));
+      }
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => resolve(Buffer.concat(chunks).toString()));
+    });
+    req.on('error', reject);
+    req.setTimeout(15000, () => { req.destroy(); reject(new Error('Alta request timeout')); });
+  });
+}
+
+async function getAltaData() {
+  const now = Date.now();
+  if (altaCache.data && (now - altaCache.fetchedAt) < CACHE_TTL_MS) {
+    return altaCache.data;
+  }
+
+  // If another fetch is in flight, wait for it
+  if (altaCache.fetching) {
+    const deadline = Date.now() + 20_000;
+    while (altaCache.fetching && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    if (altaCache.data) return altaCache.data;
+  }
+
+  altaCache.fetching = true;
+  try {
+    const html = await fetchAltaHTML();
+    const match = html.match(/window\.Alta\s*=\s*(\{.*?\});\s*<\/script>/);
+    if (!match) throw new Error('Could not extract Alta data from HTML');
+    const alta = JSON.parse(match[1]);
+    const parsed = alta.liftStatus || {};
+    if (!parsed.lifts) throw new Error('No liftStatus.lifts in Alta data');
+    altaCache.data = parsed;
+    altaCache.fetchedAt = Date.now();
+    log(`[alta] Fetched ${(parsed.lifts || []).length} lifts`);
+    return parsed;
+  } finally {
+    altaCache.fetching = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // HTTP server
 // ---------------------------------------------------------------------------
 const server = http.createServer(async (req, res) => {
@@ -244,6 +299,19 @@ const server = http.createServer(async (req, res) => {
   // --- /resorts ---
   if (path === '/resorts') {
     res.end(JSON.stringify(Object.keys(TERRAIN_URLS)));
+    return;
+  }
+
+  // --- /alta ---
+  if (path === '/alta') {
+    try {
+      const data = await getAltaData();
+      res.end(JSON.stringify(data));
+    } catch (e) {
+      log(`[alta] Request error: ${e.message}`);
+      res.statusCode = 503;
+      res.end(JSON.stringify({ error: e.message }));
+    }
     return;
   }
 

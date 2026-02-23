@@ -63,6 +63,15 @@ let refreshGeneration = 0;
 let consecutiveFailures = 0;
 
 // =====================================================
+// Status maps (per-resort API normalization)
+// =====================================================
+const SNOWBIRD_STATUS_MAP = {
+  'open': 'OPERATING',
+  'expected': 'CLOSED',
+  'closed': 'CLOSED',
+};
+
+// =====================================================
 // Niseko Adapter
 // =====================================================
 const NISEKO_STATUS_MAP = {
@@ -357,6 +366,92 @@ function createVailAdapter(resort) {
 for (const resort of VAIL_RESORTS) {
   RESORT_ADAPTERS[resort.id] = createVailAdapter(resort);
 }
+
+// =====================================================
+// Ikon Pass: Snowbird Adapter
+// =====================================================
+RESORT_ADAPTERS.snowbird = {
+  id: 'snowbird',
+  name: 'Snowbird',
+  group: 'Ikon Pass',
+  region: 'Utah',
+  timezone: 'America/Denver',
+  headerImage: null,
+  capabilities: { weather: false, trailMap: false, interactiveMap: false },
+
+  async fetchData() {
+    const res = await fetch('/api/snowbird/lifts');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const lifts = await res.json();
+
+    const areas = {};
+    for (const lift of lifts) {
+      const area = lift.sector?.name || 'Snowbird';
+      if (!areas[area]) areas[area] = [];
+      const status = SNOWBIRD_STATUS_MAP[lift.status] || 'CLOSED';
+      let start = null, end = null;
+      if (lift.hours) {
+        const m = lift.hours.trim().match(/^([\d:]+\s*[AP]M)\s*-\s*([\d:]+\s*[AP]M)$/i);
+        if (m) { start = to24(m[1]); end = to24(m[2]); }
+      }
+      areas[area].push({
+        id: lift.name,
+        name: lift.name,
+        status,
+        scheduled: lift.status === 'expected',
+        start_time: start,
+        end_time: end,
+        waitMinutes: null,
+        updateDate: null,
+      });
+    }
+
+    const subResorts = Object.entries(areas).map(([name, lifts]) => ({
+      id: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+      name, lifts, weather: null,
+    }));
+
+    return { subResorts, capabilities: this.capabilities };
+  },
+};
+
+// =====================================================
+// Ikon Pass: Alta Adapter
+// =====================================================
+RESORT_ADAPTERS.alta = {
+  id: 'alta',
+  name: 'Alta',
+  group: 'Ikon Pass',
+  region: 'Utah',
+  timezone: 'America/Denver',
+  headerImage: null,
+  capabilities: { weather: false, trailMap: false, interactiveMap: false },
+
+  async fetchData() {
+    const res = await fetch('/api/alta');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+
+    const lifts = (data.lifts || []).map(lift => {
+      const status = lift.open ? 'OPERATING' : 'CLOSED';
+      return {
+        id: lift.name,
+        name: lift.name,
+        status,
+        scheduled: !lift.open && lift.opening_at != null,
+        start_time: lift.opening_at || null,
+        end_time: lift.closing_at || null,
+        waitMinutes: null,
+        updateDate: null,
+      };
+    });
+
+    return {
+      subResorts: [{ id: 'alta', name: 'Alta', lifts, weather: null }],
+      capabilities: this.capabilities,
+    };
+  },
+};
 
 // =====================================================
 // Theme & Font Settings
@@ -1013,6 +1108,17 @@ function waitClass(minutes) {
 // =====================================================
 // Time utilities (timezone-aware)
 // =====================================================
+function to24(s) {
+  const m = s.match(/(\d+)(?::(\d+))?\s*(AM|PM)/i);
+  if (!m) return null;
+  let h = parseInt(m[1], 10);
+  const min = m[2] || '00';
+  const ampm = m[3].toUpperCase();
+  if (ampm === 'PM' && h !== 12) h += 12;
+  if (ampm === 'AM' && h === 12) h = 0;
+  return String(h).padStart(2, '0') + ':' + min;
+}
+
 function resortNow(timezone) {
   const parts = new Intl.DateTimeFormat('en-US', { timeZone: timezone, hourCycle: 'h23', hour: 'numeric', minute: 'numeric' }).formatToParts(new Date());
   return { h: parseInt(parts.find(p => p.type === 'hour').value), m: parseInt(parts.find(p => p.type === 'minute').value) };

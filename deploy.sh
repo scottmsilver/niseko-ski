@@ -22,7 +22,8 @@ die()   { printf '\033[1;31m  FATAL: %s\033[0m\n' "$*" >&2; exit 1; }
 
 run_in() {
   # Run a command inside the container
-  $INCUS "incus exec $CONTAINER -- "$@""
+  # $* joins all args into one string — required because sg ... -c takes a single command string.
+  $INCUS "incus exec $CONTAINER -- $*"
 }
 
 push_file() {
