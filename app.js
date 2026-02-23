@@ -298,7 +298,7 @@ function createVailAdapter(resort) {
           vailStatus: lift.Status,
           start_time: lift.OpenTime || null,
           end_time: lift.CloseTime || null,
-          waitMinutes: lift.WaitTimeInMinutes || 0,
+          waitMinutes: lift.WaitTimeInMinutes != null ? lift.WaitTimeInMinutes : null,
           updateDate: null,
           liftType: lift.Type || null,
           capacity: lift.Capacity || null,
@@ -988,10 +988,121 @@ function fmtTime(t) {
   const [h, m] = typeof t === 'string' ? t.split(':').map(Number) : [t.h, t.m];
   const hr = h % 12 || 12;
   const suffix = h < 12 ? 'a' : 'p';
-  return m === 0 ? `${hr}${suffix}` : `${hr}:${String(m).padStart(2,'0')}${suffix}`;
+  return `${hr}:${String(m).padStart(2,'0')}${suffix}`;
 }
 
 const CLOSING_SOON_MIN = 90;
+const PAST_CLOSE_PLAN_MIN = 60;
+
+// =====================================================
+// Two-column display logic (status + wait)
+// =====================================================
+//
+// Three layers:
+//
+// 1. computeLiftDisplay(lift, adapter) — SEMANTIC layer
+//    Decides *what* to communicate about a lift based on its API status,
+//    time-of-day, and wait data.  Returns raw {statusText, statusCls,
+//    waitText, waitCls}.  All status decisions live here.
+//
+// 2. computeRenderedColumns(display, hasAnyWait) — LAYOUT layer
+//    Decides *where* content goes (left column, right column, or both).
+//    Strips the "opens " prefix when a time stands alone — the prefix
+//    is only needed when a status label appears alongside wait data.
+//    No status decisions here, only positional logic.
+//
+// 3. renderLifts DOM code — RENDER layer
+//    Creates HTML elements from the layout output.  No logic.
+
+function computeLiftDisplay(lift, adapter) {
+  const vail = lift.vailStatus;
+  const wait = lift.waitMinutes;
+  const start = lift.start_time;
+  const end = lift.end_time;
+  const status = lift.status;
+
+  const nowMin = resortNowMinutes(adapter.timezone);
+  const startMin = start ? toMin(start) : null;
+  const endMin = end ? toMin(end) : null;
+  const beforeOpen = startMin !== null && nowMin < startMin;
+  const pastClose = endMin !== null && nowMin >= endMin;
+  const wellPastClose = endMin !== null && (nowMin - endMin) > PAST_CLOSE_PLAN_MIN;
+  const closingSoon = isRunning(status) && endMin !== null && !pastClose && (endMin - nowMin) <= CLOSING_SOON_MIN;
+  const minsLeft = endMin !== null ? Math.max(0, endMin - nowMin) : null;
+
+  // --- Reusable micro-results ---
+  const OPEN       = { statusText: 'open',    statusCls: 'operating' };
+  const CLOSED     = { statusText: 'closed',  statusCls: 'closed' };
+  const HOLD       = { statusText: 'hold',    statusCls: 'on-hold' };
+  const CLOSING    = { statusText: 'closes in ' + minsLeft + 'm', statusCls: 'closing-soon' };
+  const OPENS_AT   = start ? { statusText: 'opens ' + fmtTime(start), statusCls: 'opens' } : CLOSED;
+  const CLEAR_WAIT = { waitText: '', waitCls: '' };
+
+  // Show "opens Xa" when we're clearly outside operating hours
+  const showOpensAt = (beforeOpen || wellPastClose) && start;
+
+  // --- Wait column defaults (overridden below for non-operating states) ---
+  let waitOut;
+  if (wait === null)  waitOut = CLEAR_WAIT;
+  else if (wait === 0) waitOut = { waitText: '0m', waitCls: 'wait-low' };
+  else waitOut = { waitText: wait + 'm', waitCls: wait <= 5 ? 'wait-low' : wait <= 15 ? 'wait-mid' : 'wait-high' };
+
+  // --- Status logic ---
+  let statusOut;
+
+  if (vail === 'OnHold') {
+    statusOut = HOLD;
+    waitOut = CLEAR_WAIT;
+
+  } else if (vail === 'Closed') {
+    statusOut = showOpensAt ? OPENS_AT : CLOSED;
+    waitOut = CLEAR_WAIT;
+
+  } else if (vail === 'Scheduled') {
+    const pastOpen = startMin !== null && nowMin >= startMin;
+    if (pastClose)        statusOut = OPENS_AT;
+    else if (pastOpen)    statusOut = { statusText: 'delayed?', statusCls: 'delayed' };
+    else                  statusOut = OPENS_AT;
+    // Keep computed waitOut (Scheduled can still have wait data from API)
+
+  } else if (vail === 'Open' || (!vail && isRunning(status))) {
+    if (closingSoon)           statusOut = CLOSING;
+    else if (pastClose)      { statusOut = OPEN; waitOut = CLEAR_WAIT; }
+    else if (wait != null)     statusOut = { statusText: '', statusCls: '' }; // wait says it all
+    else                       statusOut = OPEN;
+
+  } else if (!vail) {
+    // Niseko-style: no vailStatus, no wait data
+    if (status === 'OPERATION_TEMPORARILY_SUSPENDED') statusOut = HOLD;
+    else if (status === 'STANDBY')                    statusOut = { statusText: 'standby', statusCls: 'standby' };
+    else if (showOpensAt)                             statusOut = OPENS_AT;
+    else                                              statusOut = CLOSED;
+    waitOut = CLEAR_WAIT;
+
+  } else {
+    statusOut = CLOSED;
+    waitOut = CLEAR_WAIT;
+  }
+
+  return { ...statusOut, ...waitOut };
+}
+
+// LAYOUT layer: merge two-column semantic output into visual positions.
+// When a single piece of info exists, it goes in the rightmost column.
+// "opens 8:30a" becomes just "8:30a" when shown alone (the prefix is
+// only useful as a label alongside a wait value).
+function computeRenderedColumns(display, hasAnyWait) {
+  const stripOpens = t => t.startsWith('opens ') ? t.slice(6) : t;
+
+  if (display.statusText && display.waitText) {
+    // Both columns have content — use both positions
+    return { left: display.statusText, leftCls: display.statusCls, right: display.waitText, rightCls: display.waitCls };
+  }
+  // Single piece of info → right column only
+  const text = display.waitText || display.statusText;
+  const cls = display.waitText ? display.waitCls : display.statusCls;
+  return { left: '', leftCls: '', right: stripOpens(text), rightCls: cls };
+}
 
 function liftTimeLabel(start, end, timezone, status) {
   if (!start || !end) return '';
@@ -1203,7 +1314,7 @@ function renderLifts(data) {
   const resorts = document.createElement('div');
   resorts.className = 'resorts';
   const adapter = getActiveAdapter();
-  const hasAnyWait = data.subResorts.some(sr => (sr.lifts || []).some(l => (l.waitMinutes || 0) > 0));
+  const hasAnyWait = data.subResorts.some(sr => (sr.lifts || []).some(l => l.waitMinutes != null));
 
   for (const sr of data.subResorts) {
     const card = document.createElement('div');
@@ -1268,60 +1379,42 @@ function renderLifts(data) {
       info.appendChild(name);
       info.appendChild(detail);
 
-      // Status column (always shown)
-      const statusText = document.createElement('div');
-      const wait = l.waitMinutes || 0;
+      // Two-column display (status + wait)
+      const display = computeLiftDisplay(l, adapter);
       const pastClose = isPastClose(l.end_time, adapter.timezone);
-      const closingSoon = isRunning(l.status) && isClosingSoon(l.start_time, l.end_time, adapter.timezone);
       if (pastClose && l.end_time) {
         detail.textContent = `closed at ${fmtTime(l.end_time)}`;
       }
-      if (closingSoon) {
-        const minsLeft = Math.max(0, toMin(l.end_time) - resortNowMinutes(adapter.timezone));
-        statusText.className = 'lift-status-text closing-soon';
-        statusText.textContent = `closes in ${minsLeft}m`;
-      } else if (l.vailStatus === 'Scheduled' && l.start_time) {
-        const nowMin = resortNowMinutes(adapter.timezone);
-        const startMin = toMin(l.start_time);
-        if (nowMin >= startMin && isPastClose(l.end_time, adapter.timezone)) {
-          statusText.className = 'lift-status-text closed';
-          statusText.textContent = 'closed';
-        } else {
-          statusText.className = 'lift-status-text opens';
-          statusText.textContent = `opens ${fmtTime(l.start_time)}`;
-        }
-      } else if (isRunning(l.status) && pastClose) {
-        statusText.className = 'lift-status-text standby';
-        statusText.textContent = statusLabel(l.status);
-      } else {
-        statusText.className = 'lift-status-text ' + statusClass(l.status);
-        statusText.textContent = statusLabel(l.status);
-      }
       row.appendChild(info);
-      row.appendChild(statusText);
 
-      // Wait column (only if any lift in this resort has a wait)
+      const cols = computeRenderedColumns(display, hasAnyWait);
       if (hasAnyWait) {
+        const statusEl = document.createElement('div');
+        statusEl.className = 'lift-status-text ' + cols.leftCls;
+        statusEl.textContent = cols.left;
+        row.appendChild(statusEl);
         const waitEl = document.createElement('div');
-        if (wait > 0) {
-          waitEl.className = 'lift-wait ' + waitClass(wait);
-          waitEl.textContent = `${wait}m`;
-        } else {
-          waitEl.className = 'lift-wait';
-        }
+        waitEl.className = 'lift-wait ' + cols.rightCls;
+        waitEl.textContent = cols.right;
         row.appendChild(waitEl);
+      } else {
+        const statusEl = document.createElement('div');
+        statusEl.className = 'lift-status-text ' + cols.rightCls;
+        statusEl.textContent = cols.right;
+        row.appendChild(statusEl);
       }
 
       // Expandable detail panel
       const expand = document.createElement('div');
       expand.className = 'lift-expand';
+      const wait = l.waitMinutes;
       const bits = [];
       if (l.start_time && l.end_time) bits.push(`${fmtTime(l.start_time)} – ${fmtTime(l.end_time)}`);
       if (l.liftType) {
         const typeName = l.liftType.charAt(0).toUpperCase() + l.liftType.slice(1);
         bits.push(l.capacity ? `${typeName} · ${l.capacity} seats` : typeName);
       }
-      if (wait > 0) bits.push(`${wait}m wait`);
+      if (wait != null && wait > 0) bits.push(`${wait}m wait`);
       if (l.comment) bits.push(l.comment);
       if (l.updateDate) bits.push(`Updated ${timeAgo(l.updateDate)}`);
       expand.textContent = bits.join(' · ');

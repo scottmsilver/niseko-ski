@@ -426,13 +426,14 @@
   .lift-wait.wait-low { color: var(--green); }
   .lift-wait.wait-mid { color: var(--orange); }
   .lift-wait.wait-high { color: var(--red); }
-  .lift-status-text.operating { color: var(--green); }
-  .lift-status-text.slowed { color: var(--yellow); }
-  .lift-status-text.standby { color: var(--yellow); }
-  .lift-status-text.on-hold { color: var(--orange); }
-  .lift-status-text.closed { color: var(--red); }
-  .lift-status-text.opens { color: var(--purple); }
-  .lift-status-text.closing-soon { color: var(--teal); }
+  .lift-status-text.operating, .lift-wait.operating { color: var(--green); }
+  .lift-status-text.slowed, .lift-wait.slowed { color: var(--yellow); }
+  .lift-status-text.standby, .lift-wait.standby { color: var(--yellow); }
+  .lift-status-text.on-hold, .lift-wait.on-hold { color: var(--orange); }
+  .lift-status-text.closed, .lift-wait.closed { color: var(--red); }
+  .lift-status-text.opens, .lift-wait.opens { color: var(--purple); }
+  .lift-status-text.closing-soon, .lift-wait.closing-soon { color: var(--teal); }
+  .lift-status-text.delayed, .lift-wait.delayed { color: var(--orange); }
 
   .error-banner {
     background: color-mix(in srgb, var(--red) 15%, transparent);

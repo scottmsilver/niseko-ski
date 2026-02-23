@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lift Status Matrix — Test Harness</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, 'Segoe UI', sans-serif; padding: 24px; background: #f8f8f8; color: #222; }
+  h1 { margin-bottom: 8px; }
+  .subtitle { color: #666; margin-bottom: 24px; }
+  table { border-collapse: collapse; width: 100%; margin-bottom: 32px; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+  th { background: #2a2a2a; color: #fff; text-align: left; padding: 10px 12px; font-size: 13px; font-weight: 600; }
+  td { padding: 8px 12px; border-bottom: 1px solid #eee; font-size: 13px; vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  tr.group-header td { background: #f0f0f0; font-weight: 600; font-size: 12px; color: #555; text-transform: uppercase; letter-spacing: 0.5px; }
+  .pass { background: #e8f5e9; }
+  .fail { background: #ffebee; }
+  .status-cell { font-weight: 600; }
+  .operating { color: #2e7d32; }
+  .opens { color: #1565c0; }
+  .closing-soon { color: #e65100; }
+  .closed { color: #c62828; }
+  .on-hold { color: #ef6c00; }
+  .delayed { color: #ef6c00; }
+  .standby { color: #f9a825; }
+  .wait-low { color: #2e7d32; }
+  .wait-mid { color: #e65100; }
+  .wait-high { color: #c62828; }
+  .mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; }
+  .dim { color: #999; }
+  .summary { margin-bottom: 16px; padding: 12px 16px; border-radius: 8px; font-weight: 600; }
+  .summary.all-pass { background: #e8f5e9; color: #2e7d32; }
+  .summary.has-fail { background: #ffebee; color: #c62828; }
+  h2 { margin: 24px 0 12px; }
+  .rule-box { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin-bottom: 24px; font-size: 13px; line-height: 1.6; }
+  .rule-box h3 { font-size: 14px; margin-bottom: 8px; }
+  .rule-box ul { margin-left: 20px; }
+  .rule-box code { background: #f0f0f0; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<h1>Lift Status Display Matrix</h1>
+<p class="subtitle">Test harness for the two-column display logic</p>
+
+<div class="rule-box">
+<h3>Display Algorithm</h3>
+<ul>
+  <li><b>Wait tracking active</b> (<code>wait != null</code>): wait value goes in the right column; status column is empty (wait implies open)</li>
+  <li><b>No wait tracking</b> (<code>wait === null</code>): status text (e.g. "open", "closed") goes in the right column</li>
+  <li><b>Two things to show</b> (e.g. "closes in 45m" + "12m"): status on left, wait on right</li>
+  <li><b>Empty cells show nothing</b> — no dashes, no placeholders</li>
+  <li><b>OnHold / Closed</b>: always clear wait (not meaningful)</li>
+  <li><b>Closed + >1hr past close + has times</b>: "opens Xa" in left column; just the time (e.g. "9:00a") when right-only</li>
+  <li><b>Times always include minutes</b>: "9:00a" not "9a"</li>
+  <li><b>Scheduled + past open time</b>: "delayed?"</li>
+  <li><b>Wait column visible</b> if ANY lift has <code>waitMinutes !== null</code></li>
+</ul>
+</div>
+
+<div id="summary" class="summary"></div>
+<div id="results"></div>
+
+<script>
+// =====================================================
+// Ported logic from app.js (time utilities, status helpers)
+// =====================================================
+
+function isRunning(status) {
+  return status === 'OPERATING' || status === 'OPERATION_SLOWED';
+}
+
+function fmtTime(t) {
+  const [h, m] = typeof t === 'string' ? t.split(':').map(Number) : [t.h, t.m];
+  const hr = h % 12 || 12;
+  const suffix = h < 12 ? 'a' : 'p';
+  return `${hr}:${String(m).padStart(2,'0')}${suffix}`;
+}
+
+function toMin(t) { const [h, m] = t.split(':').map(Number); return h * 60 + m; }
+
+const CLOSING_SOON_MIN = 90;
+const PAST_CLOSE_PLAN_MIN = 60;
+
+// =====================================================
+// computeDisplay — SEMANTIC layer (mirrors computeLiftDisplay in app.js)
+// Given a lift + current time, decides what to communicate.
+// =====================================================
+function computeDisplay(lift, nowMin) {
+  const vail = lift.vailStatus;
+  const wait = lift.waitMinutes;
+  const start = lift.start_time;
+  const end = lift.end_time;
+  const status = lift.status;
+
+  const startMin = start ? toMin(start) : null;
+  const endMin = end ? toMin(end) : null;
+  const beforeOpen = startMin !== null && nowMin < startMin;
+  const pastClose = endMin !== null && nowMin >= endMin;
+  const wellPastClose = endMin !== null && (nowMin - endMin) > PAST_CLOSE_PLAN_MIN;
+  const closingSoon = isRunning(status) && endMin !== null && !pastClose && (endMin - nowMin) <= CLOSING_SOON_MIN;
+  const minsLeft = endMin !== null ? Math.max(0, endMin - nowMin) : null;
+
+  const OPEN       = { statusText: 'open',    statusCls: 'operating' };
+  const CLOSED     = { statusText: 'closed',  statusCls: 'closed' };
+  const HOLD       = { statusText: 'hold',    statusCls: 'on-hold' };
+  const CLOSING    = { statusText: 'closes in ' + minsLeft + 'm', statusCls: 'closing-soon' };
+  const OPENS_AT   = start ? { statusText: 'opens ' + fmtTime(start), statusCls: 'opens' } : CLOSED;
+  const CLEAR_WAIT = { waitText: '', waitCls: '' };
+
+  const showOpensAt = (beforeOpen || wellPastClose) && start;
+
+  let waitOut;
+  if (wait === null)  waitOut = CLEAR_WAIT;
+  else if (wait === 0) waitOut = { waitText: '0m', waitCls: 'wait-low' };
+  else waitOut = { waitText: wait + 'm', waitCls: wait <= 5 ? 'wait-low' : wait <= 15 ? 'wait-mid' : 'wait-high' };
+
+  let statusOut;
+
+  if (vail === 'OnHold') {
+    statusOut = HOLD;
+    waitOut = CLEAR_WAIT;
+
+  } else if (vail === 'Closed') {
+    statusOut = showOpensAt ? OPENS_AT : CLOSED;
+    waitOut = CLEAR_WAIT;
+
+  } else if (vail === 'Scheduled') {
+    const pastOpen = startMin !== null && nowMin >= startMin;
+    if (pastClose)        statusOut = OPENS_AT;
+    else if (pastOpen)    statusOut = { statusText: 'delayed?', statusCls: 'delayed' };
+    else                  statusOut = OPENS_AT;
+
+  } else if (vail === 'Open' || (!vail && isRunning(status))) {
+    if (closingSoon)           statusOut = CLOSING;
+    else if (pastClose)      { statusOut = OPEN; waitOut = CLEAR_WAIT; }
+    else if (wait != null)     statusOut = { statusText: '', statusCls: '' };
+    else                       statusOut = OPEN;
+
+  } else if (!vail) {
+    if (status === 'OPERATION_TEMPORARILY_SUSPENDED') statusOut = HOLD;
+    else if (status === 'STANDBY')                    statusOut = { statusText: 'standby', statusCls: 'standby' };
+    else if (showOpensAt)                             statusOut = OPENS_AT;
+    else                                              statusOut = CLOSED;
+    waitOut = CLEAR_WAIT;
+
+  } else {
+    statusOut = CLOSED;
+    waitOut = CLEAR_WAIT;
+  }
+
+  return { ...statusOut, ...waitOut };
+}
+
+// =====================================================
+// computeRendered — LAYOUT layer (mirrors computeRenderedColumns in app.js)
+// Decides which visual column(s) to populate.
+// "opens 8:30a" → just "8:30a" when shown alone.
+// =====================================================
+function computeRendered(display, hasAnyWait) {
+  const stripOpens = t => t.startsWith('opens ') ? t.slice(6) : t;
+
+  if (display.statusText && display.waitText) {
+    return { left: display.statusText, leftCls: display.statusCls, right: display.waitText, rightCls: display.waitCls };
+  }
+  const text = display.waitText || display.statusText;
+  const cls = display.waitText ? display.waitCls : display.statusCls;
+  return { left: '', leftCls: '', right: stripOpens(text), rightCls: cls };
+}
+
+// =====================================================
+// Test cases
+// =====================================================
+const TEST_CASES = [
+  // ---- Open + wait=null (no tracking) ----
+  {
+    group: 'Open + wait=null (no wait tracking)',
+    name: 'Open, normal hours, no wait data',
+    lift: { name: 'Cabriolet', vailStatus: 'Open', status: 'OPERATING', start_time: '07:00', end_time: '18:00', waitMinutes: null },
+    nowMin: toMin('10:30'),
+    expect: { statusText: 'open', waitText: '' },
+    rendered: { left: '', right: 'open', rightCls: 'operating' },
+  },
+  {
+    name: 'Open, closing soon, no wait data',
+    lift: { name: 'Cabriolet', vailStatus: 'Open', status: 'OPERATING', start_time: '07:00', end_time: '18:00', waitMinutes: null },
+    nowMin: toMin('17:15'),
+    expect: { statusText: 'closes in 45m', waitText: '' },
+    rendered: { left: '', right: 'closes in 45m', rightCls: 'closing-soon' },
+  },
+  {
+    name: 'Open, past close, no wait data',
+    lift: { name: 'Cabriolet', vailStatus: 'Open', status: 'OPERATING', start_time: '07:00', end_time: '18:00', waitMinutes: null },
+    nowMin: toMin('18:30'),
+    expect: { statusText: 'open', waitText: '' },
+    rendered: { left: '', right: 'open', rightCls: 'operating' },
+  },
+
+  // ---- Open + wait=0 ----
+  {
+    group: 'Open + wait=0 (tracking, no line)',
+    name: 'Open, 0m wait, normal hours',
+    lift: { name: 'FourRunner Quad', vailStatus: 'Open', status: 'OPERATING', start_time: '08:00', end_time: '16:00', waitMinutes: 0 },
+    nowMin: toMin('10:00'),
+    expect: { statusText: '', waitText: '0m' },
+    rendered: { left: '', right: '0m', rightCls: 'wait-low' },
+  },
+  {
+    name: 'Open, 0m wait, closing soon',
+    lift: { name: 'FourRunner Quad', vailStatus: 'Open', status: 'OPERATING', start_time: '08:00', end_time: '16:00', waitMinutes: 0 },
+    nowMin: toMin('15:00'),
+    expect: { statusText: 'closes in 60m', waitText: '0m' },
+    rendered: { left: 'closes in 60m', right: '0m', rightCls: 'wait-low' },
+  },
+  {
+    name: 'Open, 0m wait, past close (stale wait cleared)',
+    lift: { name: 'FourRunner Quad', vailStatus: 'Open', status: 'OPERATING', start_time: '08:00', end_time: '16:00', waitMinutes: 0 },
+    nowMin: toMin('16:30'),
+    expect: { statusText: 'open', waitText: '' },
+    rendered: { left: '', right: 'open', rightCls: 'operating' },
+  },
+
+  // ---- Open + wait>0 ----
+  {
+    group: 'Open + wait>0 (has a line)',
+    name: 'Open, 5m wait — wait only in right col',
+    lift: { name: 'Frostwood Gondola', vailStatus: 'Open', status: 'OPERATING', start_time: '08:00', end_time: '17:30', waitMinutes: 5 },
+    nowMin: toMin('11:00'),
+    expect: { statusText: '', waitText: '5m' },
+    rendered: { left: '', right: '5m', rightCls: 'wait-low' },
+  },
+  {
+    name: 'Open, 23m wait — high wait color',
+    lift: { name: 'Mansfield Gondola', vailStatus: 'Open', status: 'OPERATING', start_time: '08:00', end_time: '16:00', waitMinutes: 23 },
+    nowMin: toMin('10:00'),
+    expect: { statusText: '', waitText: '23m' },
+    rendered: { left: '', right: '23m', rightCls: 'wait-high' },
+  },
+  {
+    name: 'Open, 12m wait, closing soon — both columns used',
+    lift: { name: 'Frostwood Gondola', vailStatus: 'Open', status: 'OPERATING', start_time: '08:00', end_time: '17:30', waitMinutes: 12 },
+    nowMin: toMin('16:30'),
+    expect: { statusText: 'closes in 60m', waitText: '12m' },
+    rendered: { left: 'closes in 60m', right: '12m', rightCls: 'wait-mid' },
+  },
+  {
+    name: 'Open, 3m wait, past close (stale wait cleared)',
+    lift: { name: 'Frostwood Gondola', vailStatus: 'Open', status: 'OPERATING', start_time: '08:00', end_time: '17:30', waitMinutes: 3 },
+    nowMin: toMin('18:00'),
+    expect: { statusText: 'open', waitText: '' },
+    rendered: { left: '', right: 'open', rightCls: 'operating' },
+  },
+
+  // ---- Scheduled + wait=null ----
+  {
+    group: 'Scheduled + no wait data',
+    name: 'Scheduled, before open',
+    lift: { name: 'Mine Cart', vailStatus: 'Scheduled', status: 'CLOSED', start_time: '09:00', end_time: '16:00', waitMinutes: null },
+    nowMin: toMin('06:00'),
+    expect: { statusText: 'opens 9:00a', waitText: '' },
+    rendered: { left: '', right: '9:00a', rightCls: 'opens' },
+  },
+  {
+    name: 'Scheduled, past open (delayed)',
+    lift: { name: 'Mine Cart', vailStatus: 'Scheduled', status: 'CLOSED', start_time: '09:00', end_time: '16:00', waitMinutes: null },
+    nowMin: toMin('09:30'),
+    expect: { statusText: 'delayed?', waitText: '' },
+    rendered: { left: '', right: 'delayed?', rightCls: 'delayed' },
+  },
+  {
+    name: 'Scheduled, well past open (still delayed)',
+    lift: { name: 'Mine Cart', vailStatus: 'Scheduled', status: 'CLOSED', start_time: '09:00', end_time: '16:00', waitMinutes: null },
+    nowMin: toMin('14:00'),
+    expect: { statusText: 'delayed?', waitText: '' },
+    rendered: { left: '', right: 'delayed?', rightCls: 'delayed' },
+  },
+  {
+    name: 'Scheduled, past close (tomorrow)',
+    lift: { name: 'Mine Cart', vailStatus: 'Scheduled', status: 'CLOSED', start_time: '09:00', end_time: '16:00', waitMinutes: null },
+    nowMin: toMin('20:00'),
+    expect: { statusText: 'opens 9:00a', waitText: '' },
+    rendered: { left: '', right: '9:00a', rightCls: 'opens' },
+  },
+
+  // ---- Scheduled + wait=0 ----
+  {
+    group: 'Scheduled + wait=0 (tracking, no line)',
+    name: 'Scheduled, 0m wait, before open',
+    lift: { name: 'Eagle Lift', vailStatus: 'Scheduled', status: 'CLOSED', start_time: '09:00', end_time: '15:45', waitMinutes: 0 },
+    nowMin: toMin('07:00'),
+    expect: { statusText: 'opens 9:00a', waitText: '0m' },
+    rendered: { left: 'opens 9:00a', right: '0m', rightCls: 'wait-low' },
+  },
+  {
+    name: 'Scheduled, 0m wait, past open (delayed)',
+    lift: { name: 'Eagle Lift', vailStatus: 'Scheduled', status: 'CLOSED', start_time: '09:00', end_time: '15:45', waitMinutes: 0 },
+    nowMin: toMin('11:00'),
+    expect: { statusText: 'delayed?', waitText: '0m' },
+    rendered: { left: 'delayed?', right: '0m', rightCls: 'wait-low' },
+  },
+  {
+    name: 'Scheduled, 0m wait, past close (tomorrow)',
+    lift: { name: 'Eagle Lift', vailStatus: 'Scheduled', status: 'CLOSED', start_time: '09:00', end_time: '15:45', waitMinutes: 0 },
+    nowMin: toMin('21:00'),
+    expect: { statusText: 'opens 9:00a', waitText: '0m' },
+    rendered: { left: 'opens 9:00a', right: '0m', rightCls: 'wait-low' },
+  },
+
+  // ---- Scheduled + wait>0 (API quirk) ----
+  {
+    group: 'Scheduled + wait>0 (API quirk)',
+    name: 'Scheduled, 10m wait, before open',
+    lift: { name: 'Crescent Lift', vailStatus: 'Scheduled', status: 'CLOSED', start_time: '09:00', end_time: '16:00', waitMinutes: 10 },
+    nowMin: toMin('06:30'),
+    expect: { statusText: 'opens 9:00a', waitText: '10m' },
+    rendered: { left: 'opens 9:00a', right: '10m', rightCls: 'wait-mid' },
+  },
+  {
+    name: 'Scheduled, 23m wait, past open (delayed)',
+    lift: { name: 'Mansfield Gondola', vailStatus: 'Scheduled', status: 'CLOSED', start_time: '08:00', end_time: '16:00', waitMinutes: 23 },
+    nowMin: toMin('09:30'),
+    expect: { statusText: 'delayed?', waitText: '23m' },
+    rendered: { left: 'delayed?', right: '23m', rightCls: 'wait-high' },
+  },
+  {
+    name: 'Scheduled, 3m wait, well past open (delayed)',
+    lift: { name: 'PayDay Lift', vailStatus: 'Scheduled', status: 'CLOSED', start_time: '09:00', end_time: '16:00', waitMinutes: 3 },
+    nowMin: toMin('13:00'),
+    expect: { statusText: 'delayed?', waitText: '3m' },
+    rendered: { left: 'delayed?', right: '3m', rightCls: 'wait-low' },
+  },
+  {
+    name: 'Scheduled, 5m wait, past close (tomorrow)',
+    lift: { name: 'Some Lift', vailStatus: 'Scheduled', status: 'CLOSED', start_time: '09:00', end_time: '16:00', waitMinutes: 5 },
+    nowMin: toMin('20:00'),
+    expect: { statusText: 'opens 9:00a', waitText: '5m' },
+    rendered: { left: 'opens 9:00a', right: '5m', rightCls: 'wait-low' },
+  },
+
+  // ---- OnHold ----
+  {
+    group: 'OnHold (temporary pause)',
+    name: 'On hold, normal hours',
+    lift: { name: 'Wind Hold Lift', vailStatus: 'OnHold', status: 'OPERATION_TEMPORARILY_SUSPENDED', start_time: '09:00', end_time: '16:00', waitMinutes: null },
+    nowMin: toMin('12:00'),
+    expect: { statusText: 'hold', waitText: '' },
+    rendered: { left: '', right: 'hold', rightCls: 'on-hold' },
+  },
+  {
+    name: 'On hold, past close',
+    lift: { name: 'Wind Hold Lift', vailStatus: 'OnHold', status: 'OPERATION_TEMPORARILY_SUSPENDED', start_time: '09:00', end_time: '16:00', waitMinutes: null },
+    nowMin: toMin('18:00'),
+    expect: { statusText: 'hold', waitText: '' },
+    rendered: { left: '', right: 'hold', rightCls: 'on-hold' },
+  },
+  {
+    name: 'On hold with wait data (unlikely, wait cleared)',
+    lift: { name: 'Weird Hold Lift', vailStatus: 'OnHold', status: 'OPERATION_TEMPORARILY_SUSPENDED', start_time: '09:00', end_time: '16:00', waitMinutes: 5 },
+    nowMin: toMin('12:00'),
+    expect: { statusText: 'hold', waitText: '' },
+    rendered: { left: '', right: 'hold', rightCls: 'on-hold' },
+  },
+
+  // ---- Closed + has times ----
+  {
+    group: 'Closed (not operating)',
+    name: 'Closed, during hours',
+    lift: { name: "McConkey's Lift", vailStatus: 'Closed', status: 'CLOSED', start_time: '09:00', end_time: '15:30', waitMinutes: null },
+    nowMin: toMin('12:00'),
+    expect: { statusText: 'closed', waitText: '' },
+    rendered: { left: '', right: 'closed', rightCls: 'closed' },
+  },
+  {
+    name: 'Closed, just past close (30m — still "closed")',
+    lift: { name: "McConkey's Lift", vailStatus: 'Closed', status: 'CLOSED', start_time: '09:00', end_time: '15:30', waitMinutes: null },
+    nowMin: toMin('16:00'),
+    expect: { statusText: 'closed', waitText: '' },
+    rendered: { left: '', right: 'closed', rightCls: 'closed' },
+  },
+  {
+    name: 'Closed, >1hr past close (planning tomorrow)',
+    lift: { name: "McConkey's Lift", vailStatus: 'Closed', status: 'CLOSED', start_time: '09:00', end_time: '15:30', waitMinutes: null },
+    nowMin: toMin('17:30'),
+    expect: { statusText: 'opens 9:00a', waitText: '' },
+    rendered: { left: '', right: '9:00a', rightCls: 'opens' },
+  },
+  {
+    name: 'Closed, evening (planning tomorrow)',
+    lift: { name: "McConkey's Lift", vailStatus: 'Closed', status: 'CLOSED', start_time: '09:00', end_time: '15:30', waitMinutes: null },
+    nowMin: toMin('20:00'),
+    expect: { statusText: 'opens 9:00a', waitText: '' },
+    rendered: { left: '', right: '9:00a', rightCls: 'opens' },
+  },
+  {
+    name: 'Closed, early morning before open (opens today)',
+    lift: { name: "McConkey's Lift", vailStatus: 'Closed', status: 'CLOSED', start_time: '09:00', end_time: '15:30', waitMinutes: null },
+    nowMin: toMin('02:00'),
+    expect: { statusText: 'opens 9:00a', waitText: '' },
+    rendered: { left: '', right: '9:00a', rightCls: 'opens' },
+  },
+  {
+    name: 'Closed, no times (seasonal)',
+    lift: { name: 'Golden Peak T-Bar', vailStatus: 'Closed', status: 'CLOSED', start_time: null, end_time: null, waitMinutes: null },
+    nowMin: toMin('12:00'),
+    expect: { statusText: 'closed', waitText: '' },
+    rendered: { left: '', right: 'closed', rightCls: 'closed' },
+  },
+
+  // ---- Niseko (no vailStatus, no wait) ----
+  {
+    group: 'Niseko-style (no vailStatus, no wait data)',
+    name: 'Niseko — operating',
+    lift: { name: 'Ace Gondola', status: 'OPERATING', start_time: '08:30', end_time: '16:00', waitMinutes: null },
+    nowMin: toMin('10:00'),
+    expect: { statusText: 'open', waitText: '' },
+    rendered: { left: '', right: 'open', rightCls: 'operating' },
+    noWaitColumn: true,
+  },
+  {
+    name: 'Niseko — operating, closing soon',
+    lift: { name: 'Ace Gondola', status: 'OPERATING', start_time: '08:30', end_time: '16:00', waitMinutes: null },
+    nowMin: toMin('15:00'),
+    expect: { statusText: 'closes in 60m', waitText: '' },
+    rendered: { left: '', right: 'closes in 60m', rightCls: 'closing-soon' },
+    noWaitColumn: true,
+  },
+  {
+    name: 'Niseko — closed during hours',
+    lift: { name: 'Ace Gondola', status: 'CLOSED', start_time: '08:30', end_time: '16:00', waitMinutes: null },
+    nowMin: toMin('10:00'),
+    expect: { statusText: 'closed', waitText: '' },
+    rendered: { left: '', right: 'closed', rightCls: 'closed' },
+    noWaitColumn: true,
+  },
+  {
+    name: 'Niseko — closed, early morning (opens today)',
+    lift: { name: 'Ace Gondola', status: 'CLOSED', start_time: '08:30', end_time: '16:00', waitMinutes: null },
+    nowMin: toMin('02:00'),
+    expect: { statusText: 'opens 8:30a', waitText: '' },
+    rendered: { left: '', right: '8:30a', rightCls: 'opens' },
+    noWaitColumn: true,
+  },
+  {
+    name: 'Niseko — closed, >1hr past close (opens tomorrow)',
+    lift: { name: 'Ace Gondola', status: 'CLOSED', start_time: '08:30', end_time: '16:00', waitMinutes: null },
+    nowMin: toMin('17:30'),
+    expect: { statusText: 'opens 8:30a', waitText: '' },
+    rendered: { left: '', right: '8:30a', rightCls: 'opens' },
+    noWaitColumn: true,
+  },
+  {
+    name: 'Niseko — closed, late night (opens tomorrow)',
+    lift: { name: 'Ace Gondola', status: 'CLOSED', start_time: '08:30', end_time: '19:00', waitMinutes: null },
+    nowMin: toMin('22:00'),
+    expect: { statusText: 'opens 8:30a', waitText: '' },
+    rendered: { left: '', right: '8:30a', rightCls: 'opens' },
+    noWaitColumn: true,
+  },
+  {
+    name: 'Niseko — closed, just past close (still "closed")',
+    lift: { name: 'Ace Gondola', status: 'CLOSED', start_time: '08:30', end_time: '16:00', waitMinutes: null },
+    nowMin: toMin('16:30'),
+    expect: { statusText: 'closed', waitText: '' },
+    rendered: { left: '', right: 'closed', rightCls: 'closed' },
+    noWaitColumn: true,
+  },
+  {
+    name: 'Niseko — standby',
+    lift: { name: 'Center Four', status: 'STANDBY', start_time: '08:30', end_time: '16:00', waitMinutes: null },
+    nowMin: toMin('14:00'),
+    expect: { statusText: 'standby', waitText: '' },
+    rendered: { left: '', right: 'standby', rightCls: 'standby' },
+    noWaitColumn: true,
+  },
+  {
+    name: 'Niseko — hold',
+    lift: { name: 'King Gondola', status: 'OPERATION_TEMPORARILY_SUSPENDED', start_time: '08:30', end_time: '16:00', waitMinutes: null },
+    nowMin: toMin('11:00'),
+    expect: { statusText: 'hold', waitText: '' },
+    rendered: { left: '', right: 'hold', rightCls: 'on-hold' },
+    noWaitColumn: true,
+  },
+];
+
+// =====================================================
+// Column visibility tests
+// =====================================================
+function shouldShowWaitColumn(lifts) {
+  return lifts.some(l => l.waitMinutes !== null);
+}
+
+const COLUMN_TESTS = [
+  {
+    name: 'All null wait (Niseko) — no column',
+    lifts: [
+      { name: 'Ace Gondola', waitMinutes: null },
+      { name: 'King Gondola', waitMinutes: null },
+    ],
+    expect: false,
+  },
+  {
+    name: 'Mix of null and 0 — column shown',
+    lifts: [
+      { name: 'Cabriolet', waitMinutes: null },
+      { name: 'Eagle Lift', waitMinutes: 0 },
+      { name: 'PayDay Lift', waitMinutes: 3 },
+    ],
+    expect: true,
+  },
+  {
+    name: 'All zero — column shown',
+    lifts: [
+      { name: 'Lift A', waitMinutes: 0 },
+      { name: 'Lift B', waitMinutes: 0 },
+    ],
+    expect: true,
+  },
+  {
+    name: 'All have waits — column shown',
+    lifts: [
+      { name: 'Lift A', waitMinutes: 5 },
+      { name: 'Lift B', waitMinutes: 12 },
+    ],
+    expect: true,
+  },
+  {
+    name: 'Single null — no column',
+    lifts: [{ name: 'Only Lift', waitMinutes: null }],
+    expect: false,
+  },
+  {
+    name: 'Single 0 — column shown',
+    lifts: [{ name: 'Only Lift', waitMinutes: 0 }],
+    expect: true,
+  },
+  {
+    name: 'Empty list — no column',
+    lifts: [],
+    expect: false,
+  },
+];
+
+// =====================================================
+// Run tests and render
+// =====================================================
+function runTests() {
+  const container = document.getElementById('results');
+  let passCount = 0;
+  let failCount = 0;
+
+  // --- computeDisplay + rendered column tests ---
+  let html = `<h2>Per-Lift Display Tests</h2>
+  <table>
+    <tr>
+      <th style="width:24%">Test Case</th>
+      <th>Input</th>
+      <th>Expected Left</th>
+      <th>Actual Left</th>
+      <th>Expected Right</th>
+      <th>Actual Right</th>
+      <th>Color</th>
+      <th>Result</th>
+    </tr>`;
+
+  let currentGroup = '';
+  for (const tc of TEST_CASES) {
+    if (tc.group) {
+      currentGroup = tc.group;
+      html += `<tr class="group-header"><td colspan="8">${currentGroup}</td></tr>`;
+    }
+
+    const display = computeDisplay(tc.lift, tc.nowMin);
+
+    // Check raw computeDisplay output
+    const statusPass = display.statusText === tc.expect.statusText;
+    const waitPass = display.waitText === tc.expect.waitText;
+
+    // Check rendered output
+    const hasAnyWait = !tc.noWaitColumn;
+    const rendered = computeRendered(display, hasAnyWait);
+    const leftPass = rendered.left === tc.rendered.left;
+    const rightPass = rendered.right === tc.rendered.right;
+    const colorPass = rendered.rightCls === tc.rendered.rightCls;
+
+    const pass = statusPass && waitPass && leftPass && rightPass && colorPass;
+    if (pass) passCount++; else failCount++;
+
+    const h = Math.floor(tc.nowMin / 60);
+    const m = tc.nowMin % 60;
+    const nowStr = `${h}:${String(m).padStart(2,'0')}`;
+    const waitInput = tc.lift.waitMinutes === null ? 'null' : tc.lift.waitMinutes;
+    const vail = tc.lift.vailStatus || '\u2014';
+    const inputStr = `<span class="mono">${nowStr}</span> ${vail} w=${waitInput}`;
+
+    const expLeft = tc.rendered.left || '<span class="dim">(empty)</span>';
+    const actLeft = rendered.left || '<span class="dim">(empty)</span>';
+    const expRight = tc.rendered.right;
+    const actRight = rendered.right;
+
+    html += `<tr class="${pass ? 'pass' : 'fail'}">
+      <td>${tc.name}</td>
+      <td style="font-size:11px">${inputStr}</td>
+      <td class="status-cell ${leftPass ? '' : 'fail'}">${expLeft}</td>
+      <td class="status-cell ${rendered.leftCls} ${leftPass ? '' : 'fail'}">${actLeft}</td>
+      <td class="status-cell ${tc.rendered.rightCls} ${rightPass ? '' : 'fail'}">${expRight}</td>
+      <td class="status-cell ${rendered.rightCls} ${rightPass ? '' : 'fail'}">${actRight}</td>
+      <td class="mono" style="font-size:11px">${colorPass ? '<span style="color:#2e7d32">' + rendered.rightCls + '</span>' : '<span style="color:#c62828">expected ' + tc.rendered.rightCls + ', got ' + rendered.rightCls + '</span>'}</td>
+      <td style="font-weight:600">${pass ? '<span style="color:#2e7d32">PASS</span>' : '<span style="color:#c62828">FAIL</span>'}</td>
+    </tr>`;
+  }
+  html += '</table>';
+
+  // --- Column visibility tests ---
+  html += `<h2>Wait Column Visibility</h2>
+  <p class="subtitle" style="margin-bottom:12px">Rule: show column if any lift has <code>waitMinutes !== null</code></p>
+  <table>
+    <tr>
+      <th style="width:30%">Test Case</th>
+      <th>Lifts (waitMinutes)</th>
+      <th>Expected</th>
+      <th>Actual</th>
+      <th>Result</th>
+    </tr>`;
+
+  for (const ct of COLUMN_TESTS) {
+    const actual = shouldShowWaitColumn(ct.lifts);
+    const pass = actual === ct.expect;
+    if (pass) passCount++; else failCount++;
+
+    const waitVals = ct.lifts.map(l =>
+      l.name + ': ' + (l.waitMinutes === null ? 'null' : l.waitMinutes)
+    ).join(', ') || '<span class="dim">empty</span>';
+
+    html += `<tr class="${pass ? 'pass' : 'fail'}">
+      <td>${ct.name}</td>
+      <td class="mono" style="font-size:11px">${waitVals}</td>
+      <td>${ct.expect ? 'show' : 'hide'}</td>
+      <td>${actual ? 'show' : 'hide'}</td>
+      <td style="font-weight:600">${pass ? '<span style="color:#2e7d32">PASS</span>' : '<span style="color:#c62828">FAIL</span>'}</td>
+    </tr>`;
+  }
+
+  html += '</table>';
+  container.innerHTML = html;
+
+  const summary = document.getElementById('summary');
+  const total = passCount + failCount;
+  if (failCount === 0) {
+    summary.className = 'summary all-pass';
+    summary.textContent = `All ${total} tests passed`;
+  } else {
+    summary.className = 'summary has-fail';
+    summary.textContent = `${failCount} of ${total} tests failed`;
+  }
+}
+
+runTests();
+</script>
+</body>
+</html>
