@@ -13,7 +13,8 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
-        buildConfigField("String", "API_BASE", "\"https://skilifts.fly.dev\"")
+        buildConfigField("String", "API_BASE", "\"${project.findProperty("API_BASE") ?: "https://skilifts.oursilverfamily.com"}\"")
+        manifestPlaceholders["apiHost"] = project.findProperty("API_BASE_HOST") ?: "skilifts.oursilverfamily.com"
     }
 
     buildTypes {

@@ -65,9 +65,15 @@ let consecutiveFailures = 0;
 // =====================================================
 // Niseko Adapter
 // =====================================================
+const NISEKO_STATUS_MAP = {
+  'OPERATION_TEMPORARILY_SUSPENDED': 'ON_HOLD',
+  'SUSPENDED_CLOSED': 'CLOSED',
+};
+
 RESORT_ADAPTERS.niseko = {
   id: 'niseko',
   name: 'Niseko United',
+  group: 'Niseko United',
   timezone: 'Asia/Tokyo',
   headerImage: 'yotei.png',
   capabilities: { weather: true, trailMap: true, interactiveMap: true },
@@ -167,7 +173,8 @@ RESORT_ADAPTERS.niseko = {
       lifts: lifts[r.id] ? lifts[r.id].map(l => ({
         id: l.id,
         name: l.name,
-        status: l.status,
+        status: NISEKO_STATUS_MAP[l.status] || l.status,
+        scheduled: false,
         start_time: l.start_time,
         end_time: l.end_time,
         updateDate: l.updateDate,
@@ -260,7 +267,7 @@ const VAIL_RESORTS = [
 const VAIL_STATUS_MAP = {
   'Open': 'OPERATING',
   'Scheduled': 'CLOSED',
-  'OnHold': 'OPERATION_TEMPORARILY_SUSPENDED',
+  'OnHold': 'ON_HOLD',
   'Closed': 'CLOSED',
 };
 
@@ -268,6 +275,8 @@ function createVailAdapter(resort) {
   return {
     id: resort.id,
     name: resort.name,
+    group: 'Epic Pass',
+    region: resort.region,
     timezone: resort.timezone,
     headerImage: null,
     capabilities: { weather: true, trailMap: false, interactiveMap: false },
@@ -295,7 +304,7 @@ function createVailAdapter(resort) {
           id: lift.Name,
           name: lift.Name,
           status: status,
-          vailStatus: lift.Status,
+          scheduled: lift.Status === 'Scheduled',
           start_time: lift.OpenTime || null,
           end_time: lift.CloseTime || null,
           waitMinutes: lift.WaitTimeInMinutes != null ? lift.WaitTimeInMinutes : null,
@@ -395,53 +404,74 @@ function renderResortPicker() {
   if (!picker) return;
   picker.innerHTML = '';
 
-  // Niseko (standalone, not a Vail resort)
-  const nisekoCard = document.createElement('div');
-  nisekoCard.className = 'resort-option' + (activeResortId === 'niseko' ? ' selected' : '');
-  nisekoCard.textContent = RESORT_ADAPTERS.niseko.name;
-  nisekoCard.addEventListener('click', () => {
-    if (activeResortId !== 'niseko') switchResort('niseko');
-  });
-  picker.appendChild(nisekoCard);
-
-  // Vail resorts grouped by region
-  const h3 = document.createElement('h3');
-  h3.className = 'resort-picker-heading';
-  h3.textContent = 'Epic Resorts';
-  picker.appendChild(h3);
-
-  // Group by region preserving order
-  const regions = [];
-  const regionMap = {};
-  for (const r of VAIL_RESORTS) {
-    if (!regionMap[r.region]) {
-      regionMap[r.region] = [];
-      regions.push(r.region);
+  // Collect all adapters and group by adapter.group (preserving registration order)
+  const groups = [];
+  const groupMap = {};
+  for (const adapter of Object.values(RESORT_ADAPTERS)) {
+    const g = adapter.group || adapter.name;
+    if (!groupMap[g]) {
+      groupMap[g] = [];
+      groups.push(g);
     }
-    regionMap[r.region].push(r);
+    groupMap[g].push(adapter);
   }
 
-  for (const region of regions) {
-    const group = document.createElement('div');
-    group.className = 'resort-region-group';
-    const label = document.createElement('div');
-    label.className = 'resort-region-label';
-    label.textContent = region;
-    group.appendChild(label);
+  for (const groupName of groups) {
+    const adapters = groupMap[groupName];
 
-    const row = document.createElement('div');
-    row.className = 'resort-region-row';
-    for (const r of regionMap[region]) {
+    // Single-resort group (e.g. Niseko): render as a standalone card, no heading
+    if (adapters.length === 1 && !adapters[0].region) {
+      const a = adapters[0];
       const card = document.createElement('div');
-      card.className = 'resort-option resort-option-sm' + (activeResortId === r.id ? ' selected' : '');
-      card.textContent = r.name;
+      card.className = 'resort-option' + (activeResortId === a.id ? ' selected' : '');
+      card.textContent = a.name;
       card.addEventListener('click', () => {
-        if (activeResortId !== r.id) switchResort(r.id);
+        if (activeResortId !== a.id) switchResort(a.id);
       });
-      row.appendChild(card);
+      picker.appendChild(card);
+      continue;
     }
-    group.appendChild(row);
-    picker.appendChild(group);
+
+    // Multi-resort group: heading + sub-group by region
+    const h3 = document.createElement('h3');
+    h3.className = 'resort-picker-heading';
+    h3.textContent = groupName;
+    picker.appendChild(h3);
+
+    // Sub-group by region, preserving order
+    const regions = [];
+    const regionMap = {};
+    for (const a of adapters) {
+      const region = a.region || groupName;
+      if (!regionMap[region]) {
+        regionMap[region] = [];
+        regions.push(region);
+      }
+      regionMap[region].push(a);
+    }
+
+    for (const region of regions) {
+      const group = document.createElement('div');
+      group.className = 'resort-region-group';
+      const label = document.createElement('div');
+      label.className = 'resort-region-label';
+      label.textContent = region;
+      group.appendChild(label);
+
+      const row = document.createElement('div');
+      row.className = 'resort-region-row';
+      for (const a of regionMap[region]) {
+        const card = document.createElement('div');
+        card.className = 'resort-option resort-option-sm' + (activeResortId === a.id ? ' selected' : '');
+        card.textContent = a.name;
+        card.addEventListener('click', () => {
+          if (activeResortId !== a.id) switchResort(a.id);
+        });
+        row.appendChild(card);
+      }
+      group.appendChild(row);
+      picker.appendChild(group);
+    }
   }
 }
 
@@ -948,13 +978,13 @@ function initNisekoMap(adapter) {
 // =====================================================
 // Status helpers
 // =====================================================
+// Adapters normalize raw API statuses to these keys before data reaches shared code.
 const STATUS_INFO = {
-  'OPERATING':                       { css: 'operating', label: 'open',    color: 'var(--green)',  hex: '#7bed9f' },
-  'OPERATION_SLOWED':                { css: 'slowed',    label: 'slowed',  color: 'var(--yellow)', hex: '#eccc68' },
-  'STANDBY':                         { css: 'standby',   label: 'standby', color: 'var(--yellow)', hex: '#eccc68' },
-  'OPERATION_TEMPORARILY_SUSPENDED': { css: 'on-hold',   label: 'hold',    color: 'var(--orange)', hex: '#ff9f43' },
-  'SUSPENDED_CLOSED':                { css: 'closed',    label: 'closed',  color: 'var(--red)',    hex: '#ff6b81' },
-  'CLOSED':                          { css: 'closed',    label: 'closed',  color: 'var(--red)',    hex: '#ff6b81' },
+  'OPERATING':       { css: 'operating', label: 'open',    color: 'var(--green)',  hex: '#7bed9f' },
+  'OPERATION_SLOWED': { css: 'slowed',    label: 'slowed',  color: 'var(--yellow)', hex: '#eccc68' },
+  'STANDBY':         { css: 'standby',   label: 'standby', color: 'var(--yellow)', hex: '#eccc68' },
+  'ON_HOLD':         { css: 'on-hold',   label: 'hold',    color: 'var(--orange)', hex: '#ff9f43' },
+  'CLOSED':          { css: 'closed',    label: 'closed',  color: 'var(--red)',    hex: '#ff6b81' },
 };
 const DEFAULT_STATUS_INFO = { css: 'closed', label: 'closed', color: 'var(--red)', hex: '#ff6b81' };
 
@@ -965,6 +995,13 @@ function statusHex(status) { return statusInfo(status).hex; }
 
 function isRunning(status) {
   return status === 'OPERATING' || status === 'OPERATION_SLOWED';
+}
+
+function fmtDuration(mins) {
+  if (mins < 60) return mins + 'm';
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m === 0 ? h + 'h' : h + 'h' + m + 'm';
 }
 
 function waitClass(minutes) {
@@ -1015,7 +1052,7 @@ const PAST_CLOSE_PLAN_MIN = 60;
 //    Creates HTML elements from the layout output.  No logic.
 
 function computeLiftDisplay(lift, adapter) {
-  const vail = lift.vailStatus;
+  const scheduled = lift.scheduled;
   const wait = lift.waitMinutes;
   const start = lift.start_time;
   const end = lift.end_time;
@@ -1034,9 +1071,9 @@ function computeLiftDisplay(lift, adapter) {
   const OPEN       = { statusText: 'open',    statusCls: 'operating' };
   const CLOSED     = { statusText: 'closed',  statusCls: 'closed' };
   const HOLD       = { statusText: 'hold',    statusCls: 'on-hold' };
-  const CLOSING    = { statusText: 'closes in ' + minsLeft + 'm', statusCls: 'closing-soon' };
   const OPENS_AT   = start ? { statusText: 'opens ' + fmtTime(start), statusCls: 'opens' } : CLOSED;
   const CLEAR_WAIT = { waitText: '', waitCls: '' };
+  let detailText = '';
 
   // Show "opens Xa" when we're clearly outside operating hours
   const showOpensAt = (beforeOpen || wellPastClose) && start;
@@ -1045,38 +1082,32 @@ function computeLiftDisplay(lift, adapter) {
   let waitOut;
   if (wait === null)  waitOut = CLEAR_WAIT;
   else if (wait === 0) waitOut = { waitText: '0m', waitCls: 'wait-low' };
-  else waitOut = { waitText: wait + 'm', waitCls: wait <= 5 ? 'wait-low' : wait <= 15 ? 'wait-mid' : 'wait-high' };
+  else waitOut = { waitText: wait + 'm', waitCls: waitClass(wait) };
 
   // --- Status logic ---
   let statusOut;
 
-  if (vail === 'OnHold') {
+  if (status === 'ON_HOLD') {
     statusOut = HOLD;
     waitOut = CLEAR_WAIT;
 
-  } else if (vail === 'Closed') {
+  } else if (status === 'CLOSED' && !scheduled) {
     statusOut = showOpensAt ? OPENS_AT : CLOSED;
     waitOut = CLEAR_WAIT;
 
-  } else if (vail === 'Scheduled') {
+  } else if (status === 'CLOSED' && scheduled) {
     const pastOpen = startMin !== null && nowMin >= startMin;
-    if (pastClose)        statusOut = OPENS_AT;
-    else if (pastOpen)    statusOut = { statusText: 'delayed?', statusCls: 'delayed' };
-    else                  statusOut = OPENS_AT;
+    statusOut = (!pastClose && pastOpen) ? { statusText: 'delayed?', statusCls: 'delayed' } : OPENS_AT;
     // Keep computed waitOut (Scheduled can still have wait data from API)
 
-  } else if (vail === 'Open' || (!vail && isRunning(status))) {
-    if (closingSoon)           statusOut = CLOSING;
-    else if (pastClose)      { statusOut = OPEN; waitOut = CLEAR_WAIT; }
-    else if (wait != null)     statusOut = { statusText: '', statusCls: '' }; // wait says it all
+  } else if (isRunning(status)) {
+    if (closingSoon)           statusOut = { statusText: 'closes in ' + fmtDuration(minsLeft), statusCls: 'closing-soon', statusColumn: true };
+    else if (pastClose)      { statusOut = OPEN; waitOut = CLEAR_WAIT; if (end) detailText = 'closed at ' + fmtTime(end); }
+    else if (wait != null)     statusOut = { statusText: '', statusCls: '' };
     else                       statusOut = OPEN;
 
-  } else if (!vail) {
-    // Niseko-style: no vailStatus, no wait data
-    if (status === 'OPERATION_TEMPORARILY_SUSPENDED') statusOut = HOLD;
-    else if (status === 'STANDBY')                    statusOut = { statusText: 'standby', statusCls: 'standby' };
-    else if (showOpensAt)                             statusOut = OPENS_AT;
-    else                                              statusOut = CLOSED;
+  } else if (status === 'STANDBY') {
+    statusOut = showOpensAt ? OPENS_AT : { statusText: 'standby', statusCls: 'standby' };
     waitOut = CLEAR_WAIT;
 
   } else {
@@ -1084,13 +1115,15 @@ function computeLiftDisplay(lift, adapter) {
     waitOut = CLEAR_WAIT;
   }
 
-  return { ...statusOut, ...waitOut };
+  return { ...statusOut, ...waitOut, detailText };
 }
 
 // LAYOUT layer: merge two-column semantic output into visual positions.
 // When a single piece of info exists, it goes in the rightmost column.
 // "opens 8:30a" becomes just "8:30a" when shown alone (the prefix is
 // only useful as a label alongside a wait value).
+// "closes in X" stays in the left (status) column when the resort has
+// wait data, so all closing-soon labels align regardless of per-lift wait.
 function computeRenderedColumns(display, hasAnyWait) {
   const stripOpens = t => t.startsWith('opens ') ? t.slice(6) : t;
 
@@ -1098,40 +1131,17 @@ function computeRenderedColumns(display, hasAnyWait) {
     // Both columns have content — use both positions
     return { left: display.statusText, leftCls: display.statusCls, right: display.waitText, rightCls: display.waitCls };
   }
+  // Status flagged as statusColumn (e.g. "closes in X") stays in the left column
+  // so it aligns with other lifts that show status + wait side by side.
+  if (hasAnyWait && display.statusColumn) {
+    return { left: display.statusText, leftCls: display.statusCls, right: '', rightCls: '' };
+  }
   // Single piece of info → right column only
   const text = display.waitText || display.statusText;
   const cls = display.waitText ? display.waitCls : display.statusCls;
   return { left: '', leftCls: '', right: stripOpens(text), rightCls: cls };
 }
 
-function liftTimeLabel(start, end, timezone, status) {
-  if (!start || !end) return '';
-  if (!isRunning(status)) return '';
-  const nowMin = resortNowMinutes(timezone);
-  const [sh, sm] = start.split(':').map(Number);
-  const [eh, em] = end.split(':').map(Number);
-  const startMin = sh * 60 + sm;
-  const endMin = eh * 60 + em;
-  if (nowMin < startMin) return `opens ${fmtTime(start)}`;
-  if (endMin - nowMin <= CLOSING_SOON_MIN && endMin > nowMin) {
-    return `${fmtTime(start)} – ${fmtTime(end)}`;
-  }
-  return '';
-}
-
-function isClosingSoon(start, end, timezone) {
-  if (!start || !end) return false;
-  const nowMin = resortNowMinutes(timezone);
-  const endMin = toMin(end);
-  return endMin - nowMin <= CLOSING_SOON_MIN && endMin > nowMin;
-}
-
-function isPastClose(end, timezone) {
-  if (!end) return false;
-  const nowMin = resortNowMinutes(timezone);
-  const endMin = toMin(end);
-  return nowMin >= endMin;
-}
 
 function timeAgo(isoString) {
   if (!isoString) return '';
@@ -1374,17 +1384,12 @@ function renderLifts(data) {
       name.textContent = l.name;
       const detail = document.createElement('div');
       detail.className = 'lift-detail';
-      const timeLabel = liftTimeLabel(l.start_time, l.end_time, adapter.timezone, l.status);
-      detail.textContent = timeLabel;
       info.appendChild(name);
       info.appendChild(detail);
 
-      // Two-column display (status + wait)
+      // Two-column display (status + wait + subtitle)
       const display = computeLiftDisplay(l, adapter);
-      const pastClose = isPastClose(l.end_time, adapter.timezone);
-      if (pastClose && l.end_time) {
-        detail.textContent = `closed at ${fmtTime(l.end_time)}`;
-      }
+      detail.textContent = display.detailText;
       row.appendChild(info);
 
       const cols = computeRenderedColumns(display, hasAnyWait);
