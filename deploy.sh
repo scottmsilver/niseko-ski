@@ -98,7 +98,7 @@ phase1_container() {
     # Install packages
     info "Installing packages (this takes a minute)..."
     run_in "apt-get update -qq"
-    run_in "apt-get install -y -qq nginx supervisor curl ca-certificates gnupg"
+    run_in "apt-get install -y -qq nginx supervisor curl ca-certificates gnupg poppler-utils imagemagick"
 
     # Install Chrome dependencies (for Puppeteer's bundled Chromium — not the snap)
     info "Installing Chromium dependencies"

@@ -8,11 +8,16 @@ function getActiveAdapter() {
   return RESORT_ADAPTERS[activeResortId] || RESORT_ADAPTERS.niseko;
 }
 
+function getActiveTab() {
+  const btn = document.querySelector('.tab-btn.active');
+  return btn ? btn.dataset.tab : 'lifts';
+}
+
 function switchResort(id, skipPush) {
   if (!RESORT_ADAPTERS[id]) return;
   activeResortId = id;
   localStorage.setItem('ski-active-resort', id);
-  if (!skipPush) history.pushState(null, '', '/' + id);
+  if (!skipPush) history.pushState(null, '', '/' + id + '/lifts');
   // Reset state
   previousData = null;
   latestData = null;
@@ -24,6 +29,10 @@ function switchResort(id, skipPush) {
   mapInit = false;
   trailMapInit = false;
   mapRef = null;
+  // Abort any in-flight trail map listeners and clear the image
+  if (window._trailMapAbort) { window._trailMapAbort.abort(); window._trailMapAbort = null; }
+  const trailImg = document.getElementById('trail-map-img');
+  if (trailImg) { trailImg.removeAttribute('src'); trailImg.style.transform = ''; }
   // Update UI
   updateHeader();
   updateTabVisibility();
@@ -188,6 +197,7 @@ RESORT_ADAPTERS.niseko = {
         end_time: l.end_time,
         updateDate: l.updateDate,
         comment: l.comment || null,
+        waitMinutes: null,
       })) : null,
       weather: weather[r.id] || null,
     }));
@@ -200,10 +210,6 @@ RESORT_ADAPTERS.niseko = {
       this.initLiftData();
     }
     initNisekoMap(this);
-  },
-
-  initTrailMap() {
-    initNisekoTrailMap();
   },
 
   updateMapLifts(data) {
@@ -288,7 +294,7 @@ function createVailAdapter(resort) {
     region: resort.region,
     timezone: resort.timezone,
     headerImage: null,
-    capabilities: { weather: true, trailMap: false, interactiveMap: false },
+    capabilities: { weather: true, trailMap: true, interactiveMap: false },
 
     async fetchData() {
       const [terrainRes, weatherRes] = await Promise.all([
@@ -377,7 +383,7 @@ RESORT_ADAPTERS.snowbird = {
   region: 'Utah',
   timezone: 'America/Denver',
   headerImage: null,
-  capabilities: { weather: false, trailMap: false, interactiveMap: false },
+  capabilities: { weather: false, trailMap: true, interactiveMap: false },
 
   async fetchData() {
     const res = await fetch('/api/snowbird/lifts');
@@ -425,7 +431,7 @@ RESORT_ADAPTERS.alta = {
   region: 'Utah',
   timezone: 'America/Denver',
   headerImage: null,
-  capabilities: { weather: false, trailMap: false, interactiveMap: false },
+  capabilities: { weather: false, trailMap: true, interactiveMap: false },
 
   async fetchData() {
     const res = await fetch('/api/alta');
@@ -630,14 +636,15 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById('panel-' + btn.dataset.tab).classList.add('active');
+    history.replaceState(null, '', '/' + activeResortId + '/' + btn.dataset.tab);
     const adapter = getActiveAdapter();
     if (btn.dataset.tab === 'map' && !mapInit && adapter.initMap) {
       mapInit = true;
       adapter.initMap();
     }
-    if (btn.dataset.tab === 'trail' && !trailMapInit && adapter.initTrailMap) {
+    if (btn.dataset.tab === 'trail' && !trailMapInit) {
       trailMapInit = true;
-      adapter.initTrailMap();
+      initTrailMap();
     }
   });
 });
@@ -692,15 +699,33 @@ function updateHeader() {
 // =====================================================
 // Trail Map - pinch-zoom & pan (Niseko-specific)
 // =====================================================
-function initNisekoTrailMap() {
+function initTrailMap() {
+  // Abort previous instance's listeners (prevents leaks on resort switch)
+  if (window._trailMapAbort) { window._trailMapAbort.abort(); window._trailMapAbort = null; }
+  const ac = new AbortController();
+  const signal = ac.signal;
+  window._trailMapAbort = ac;
+
+  const resortId = activeResortId;
+  const adapter = getActiveAdapter();
   const container = document.getElementById('trail-map-container');
   const img = document.getElementById('trail-map-img');
   const loading = document.getElementById('trail-map-loading');
+
+  // Reset loading state
+  loading.style.display = '';
+  loading.textContent = '';
+  loading.innerHTML = '<div class="spinner"></div>&nbsp;Loading trail map...';
+  img.removeAttribute('src');
+  img.style.transform = '';
+  img.alt = adapter.name + ' Trail Map';
 
   let scale = 1, minScale = 0.1, maxScale = 8;
   let tx = 0, ty = 0;
   let isDragging = false, startX, startY, startTx, startTy;
   let lastTouchDist = 0, lastTouchMid = null;
+
+  const storageKey = 'ski-trail-state-' + resortId;
 
   function applyTransform() {
     img.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
@@ -728,19 +753,21 @@ function initNisekoTrailMap() {
   }
 
   function saveTrailState() {
-    localStorage.setItem('ski-trail-state', JSON.stringify({ scale, tx, ty }));
+    localStorage.setItem(storageKey, JSON.stringify({ scale, tx, ty }));
   }
 
   function loadTrailState() {
     try {
-      const saved = JSON.parse(localStorage.getItem('ski-trail-state'));
+      const saved = JSON.parse(localStorage.getItem(storageKey));
       if (saved && saved.scale > 0) return saved;
     } catch (e) {}
     return null;
   }
 
-  img.src = 'trail-map.jpg';
+  const imageUrl = resortId === 'niseko' ? 'trail-map.jpg' : '/api/trailmap/' + resortId;
+  img.src = imageUrl;
   img.onload = () => {
+    if (signal.aborted) return;
     loading.style.display = 'none';
     const saved = loadTrailState();
     if (saved) {
@@ -753,27 +780,30 @@ function initNisekoTrailMap() {
       fitToContainer();
     }
   };
-  img.onerror = () => { loading.textContent = 'Failed to load trail map'; };
+  img.onerror = () => {
+    if (signal.aborted) return;
+    loading.innerHTML = 'Trail map not available';
+  };
 
   // Mouse wheel zoom
   container.addEventListener('wheel', e => {
     e.preventDefault();
     const rect = container.getBoundingClientRect();
     zoomAt(e.clientX - rect.left, e.clientY - rect.top, e.deltaY < 0 ? WHEEL_ZOOM_IN : WHEEL_ZOOM_OUT);
-  }, { passive: false });
+  }, { passive: false, signal });
 
   // Mouse drag
   container.addEventListener('mousedown', e => {
     isDragging = true; startX = e.clientX; startY = e.clientY;
     startTx = tx; startTy = ty;
-  });
+  }, { signal });
   window.addEventListener('mousemove', e => {
     if (!isDragging) return;
     tx = startTx + (e.clientX - startX);
     ty = startTy + (e.clientY - startY);
     applyTransform();
-  });
-  window.addEventListener('mouseup', () => { if (isDragging) saveTrailState(); isDragging = false; });
+  }, { signal });
+  window.addEventListener('mouseup', () => { if (isDragging) saveTrailState(); isDragging = false; }, { signal });
 
   // Touch pinch-zoom & pan
   function touchDist(t) {
@@ -795,7 +825,7 @@ function initNisekoTrailMap() {
       lastTouchDist = touchDist(e.touches);
       lastTouchMid = touchMid(e.touches, container.getBoundingClientRect());
     }
-  }, { passive: true });
+  }, { passive: true, signal });
 
   container.addEventListener('touchmove', e => {
     e.preventDefault();
@@ -813,12 +843,12 @@ function initNisekoTrailMap() {
       lastTouchDist = dist;
       lastTouchMid = mid;
     }
-  }, { passive: false });
+  }, { passive: false, signal });
 
   container.addEventListener('touchend', e => {
     if (e.touches.length < 2) { lastTouchDist = 0; lastTouchMid = null; }
     if (e.touches.length === 0) { isDragging = false; saveTrailState(); }
-  });
+  }, { signal });
 
   // Double-tap to zoom in
   let lastTap = 0;
@@ -831,20 +861,20 @@ function initNisekoTrailMap() {
       zoomAt(ct.clientX - rect.left, ct.clientY - rect.top, 2);
     }
     lastTap = now;
-  });
+  }, { signal });
 
   // Buttons
   document.getElementById('trail-zoom-in').addEventListener('click', () => {
     zoomAt(container.clientWidth / 2, container.clientHeight / 2, 1.4);
-  });
+  }, { signal });
   document.getElementById('trail-zoom-out').addEventListener('click', () => {
     zoomAt(container.clientWidth / 2, container.clientHeight / 2, 0.7);
-  });
-  document.getElementById('trail-zoom-fit').addEventListener('click', fitToContainer);
+  }, { signal });
+  document.getElementById('trail-zoom-fit').addEventListener('click', fitToContainer, { signal });
 
   window.addEventListener('resize', () => {
     if (document.getElementById('panel-trail').classList.contains('active')) fitToContainer();
-  });
+  }, { signal });
 }
 
 // =====================================================
@@ -1186,7 +1216,7 @@ function computeLiftDisplay(lift, adapter) {
 
   // --- Wait column defaults (overridden below for non-operating states) ---
   let waitOut;
-  if (wait === null)  waitOut = CLEAR_WAIT;
+  if (wait == null)   waitOut = CLEAR_WAIT;
   else if (wait === 0) waitOut = { waitText: '0m', waitCls: 'wait-low' };
   else waitOut = { waitText: wait + 'm', waitCls: waitClass(wait) };
 
@@ -1204,7 +1234,7 @@ function computeLiftDisplay(lift, adapter) {
   } else if (status === 'CLOSED' && scheduled) {
     const pastOpen = startMin !== null && nowMin >= startMin;
     statusOut = (!pastClose && pastOpen) ? { statusText: 'delayed?', statusCls: 'delayed' } : OPENS_AT;
-    // Keep computed waitOut (Scheduled can still have wait data from API)
+    waitOut = CLEAR_WAIT;
 
   } else if (isRunning(status)) {
     if (closingSoon)           statusOut = { statusText: 'closes in ' + fmtDuration(minsLeft), statusCls: 'closing-soon', statusColumn: true };
@@ -1636,11 +1666,13 @@ async function refresh() {
 // Init
 // =====================================================
 async function init() {
-  // URL routing: check pathname for resort ID
-  const path = window.location.pathname.replace(/^\//, '').toLowerCase();
-  if (path && RESORT_ADAPTERS[path]) {
-    activeResortId = path;
-    localStorage.setItem('ski-active-resort', path);
+  // URL routing: parse /{resort}/{tab} from pathname
+  const pathParts = window.location.pathname.replace(/^\//, '').toLowerCase().split('/');
+  const resortSlug = pathParts[0];
+  const tabSlug = pathParts[1] || 'lifts';
+  if (resortSlug && RESORT_ADAPTERS[resortSlug]) {
+    activeResortId = resortSlug;
+    localStorage.setItem('ski-active-resort', resortSlug);
   }
 
   const adapter = getActiveAdapter();
@@ -1648,13 +1680,31 @@ async function init() {
   updateHeader();
   updateTabVisibility();
   renderSettings();
+
+  // Activate tab from URL (after DOM is set up)
+  const validTabs = ['lifts', 'weather', 'trail', 'map', 'settings'];
+  if (validTabs.includes(tabSlug)) {
+    const tabBtn = document.querySelector(`.tab-btn[data-tab="${tabSlug}"]`);
+    if (tabBtn && tabBtn.style.display !== 'none') tabBtn.click();
+  }
+
   refresh();
 }
 
 window.addEventListener('popstate', () => {
-  const path = window.location.pathname.replace(/^\//, '').toLowerCase();
-  if (path && RESORT_ADAPTERS[path] && path !== activeResortId) {
-    switchResort(path, true);
+  const pathParts = window.location.pathname.replace(/^\//, '').toLowerCase().split('/');
+  const resortSlug = pathParts[0];
+  const tabSlug = pathParts[1] || 'lifts';
+  if (resortSlug && RESORT_ADAPTERS[resortSlug]) {
+    if (resortSlug !== activeResortId) {
+      switchResort(resortSlug, true);
+    }
+    // Activate the tab from the URL
+    const validTabs = ['lifts', 'weather', 'trail', 'map', 'settings'];
+    if (validTabs.includes(tabSlug) && tabSlug !== getActiveTab()) {
+      const tabBtn = document.querySelector(`.tab-btn[data-tab="${tabSlug}"]`);
+      if (tabBtn && tabBtn.style.display !== 'none') tabBtn.click();
+    }
   }
 });
 
