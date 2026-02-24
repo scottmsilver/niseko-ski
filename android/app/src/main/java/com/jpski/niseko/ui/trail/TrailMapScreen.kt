@@ -8,10 +8,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.withTransform
@@ -20,40 +22,101 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import com.jpski.niseko.BuildConfig
 import com.jpski.niseko.ui.theme.SkiTheme
 import com.jpski.niseko.ui.theme.scaledSp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.util.concurrent.TimeUnit
 
 @Composable
-fun TrailMapScreen() {
+fun TrailMapScreen(resortId: String = "niseko") {
     val context = LocalContext.current
     val colors = SkiTheme.colors
-    val prefs = remember { context.getSharedPreferences("niseko_map_state", Context.MODE_PRIVATE) }
-    val bitmapPair = remember {
-        val androidBitmap: Bitmap? = context.assets.open("trail-map.jpg").use { stream ->
-            BitmapFactory.decodeStream(stream)
-        }
-        androidBitmap to androidBitmap?.asImageBitmap()
+    val prefs = remember(resortId) {
+        context.getSharedPreferences("trail_map_state_$resortId", Context.MODE_PRIVATE)
     }
+
+    var isLoading by remember(resortId) { mutableStateOf(true) }
+    var errorMsg by remember(resortId) { mutableStateOf<String?>(null) }
+    var bitmapPair by remember(resortId) {
+        mutableStateOf<Pair<Bitmap?, androidx.compose.ui.graphics.ImageBitmap?>>(null to null)
+    }
+
+    // Load bitmap: bundled asset for Niseko, server-side for all others
+    LaunchedEffect(resortId) {
+        isLoading = true
+        errorMsg = null
+        bitmapPair = null to null
+
+        try {
+            val androidBitmap = if (resortId == "niseko") {
+                withContext(Dispatchers.IO) {
+                    context.assets.open("trail-map.jpg").use { stream ->
+                        BitmapFactory.decodeStream(stream)
+                    }
+                }
+            } else {
+                withContext(Dispatchers.IO) {
+                    val client = OkHttpClient.Builder()
+                        .connectTimeout(45, TimeUnit.SECONDS)
+                        .readTimeout(45, TimeUnit.SECONDS)
+                        .build()
+                    val url = "${BuildConfig.API_BASE}/api/trailmap/$resortId"
+                    val request = Request.Builder().url(url).build()
+                    client.newCall(request).execute().use { response ->
+                        if (!response.isSuccessful) {
+                            throw Exception("HTTP ${response.code}")
+                        }
+                        val bytes = response.body?.bytes() ?: throw Exception("Empty response")
+                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    }
+                }
+            }
+            if (androidBitmap != null) {
+                bitmapPair = androidBitmap to androidBitmap.asImageBitmap()
+            } else {
+                errorMsg = "Failed to decode trail map"
+            }
+        } catch (e: Exception) {
+            errorMsg = "Trail map not available"
+        }
+        isLoading = false
+    }
+
     val (androidBitmap, bitmap) = bitmapPair
 
-    DisposableEffect(Unit) {
+    DisposableEffect(resortId) {
         onDispose {
             androidBitmap?.recycle()
         }
     }
 
-    if (bitmap == null) {
+    if (isLoading) {
         Box(Modifier.fillMaxSize().background(colors.bg), contentAlignment = Alignment.Center) {
-            Text("Failed to load trail map", color = colors.textDim, fontSize = 13.scaledSp)
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                CircularProgressIndicator(color = colors.accent)
+                Spacer(Modifier.height(8.dp))
+                Text("Loading trail map...", color = colors.textDim, fontSize = 13.scaledSp)
+            }
         }
         return
     }
 
-    var scale by remember { mutableFloatStateOf(1f) }
-    var offsetX by remember { mutableFloatStateOf(0f) }
-    var offsetY by remember { mutableFloatStateOf(0f) }
-    var containerSize by remember { mutableStateOf(IntSize.Zero) }
-    var fitted by remember { mutableStateOf(false) }
+    if (bitmap == null || errorMsg != null) {
+        Box(Modifier.fillMaxSize().background(colors.bg), contentAlignment = Alignment.Center) {
+            Text(errorMsg ?: "Failed to load trail map", color = colors.textDim, fontSize = 13.scaledSp)
+        }
+        return
+    }
+
+    var scale by remember(resortId) { mutableFloatStateOf(1f) }
+    var offsetX by remember(resortId) { mutableFloatStateOf(0f) }
+    var offsetY by remember(resortId) { mutableFloatStateOf(0f) }
+    var containerSize by remember(resortId) { mutableStateOf(IntSize.Zero) }
+    var fitted by remember(resortId) { mutableStateOf(false) }
 
     fun saveTrailState() {
         prefs.edit()
@@ -95,7 +158,7 @@ fun TrailMapScreen() {
                     }
                 }
             }
-            .pointerInput(Unit) {
+            .pointerInput(resortId) {
                 detectTransformGestures { centroid, pan, zoom, _ ->
                     val newScale = (scale * zoom).coerceIn(minScale, maxScale)
                     val ratio = newScale / scale
@@ -105,7 +168,7 @@ fun TrailMapScreen() {
                     saveTrailState()
                 }
             }
-            .pointerInput(Unit) {
+            .pointerInput(resortId) {
                 detectTapGestures(
                     onDoubleTap = { tap ->
                         val newScale = (scale * 2f).coerceIn(minScale, maxScale)

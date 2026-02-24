@@ -50,7 +50,7 @@ fun LiftsScreen(
             }
         }
 
-        val hasAnyWait = subResorts.any { sr -> sr.lifts?.any { it.waitMinutes > 0 } == true }
+        val hasAnyWait = subResorts.any { sr -> sr.lifts?.any { it.waitMinutes != null } == true }
         for (sr in subResorts) {
             if (sr.lifts == null) {
                 item(key = "resort-${sr.id}") {
@@ -232,6 +232,89 @@ private fun LiftRow(
 ) {
     val colors = SkiTheme.colors
 
+    // Use server-vended display data, or compute client-side as fallback
+    val d = lift.display
+    val renderedLeft: String
+    val renderedRight: String
+    val detailText: String
+    val leftCls: String
+    val rightCls: String
+
+    if (d != null) {
+        renderedLeft = d.left
+        renderedRight = d.right
+        detailText = d.detailText
+        leftCls = d.leftCls
+        rightCls = d.rightCls
+    } else {
+        // Fallback: compute client-side (matches web's computeLiftDisplay + computeRenderedColumns)
+        val scheduled = lift.vailStatus == "Scheduled"
+        val pastClose = TimeUtils.isPastClose(lift.endTime, timezone)
+        val startMin = if (lift.startTime.isNotBlank()) TimeUtils.toMin(lift.startTime) else null
+        val endMin = if (lift.endTime.isNotBlank()) TimeUtils.toMin(lift.endTime) else null
+        val nowMin = TimeUtils.nowMinutes(timezone)
+        val beforeOpen = startMin != null && nowMin < startMin
+        val wellPastClose = endMin != null && (nowMin - endMin) > 120
+        val closingSoon = lift.isRunning && endMin != null && !pastClose && (endMin - nowMin) <= 90
+        val minsLeft = if (endMin != null) maxOf(0, endMin - nowMin) else null
+        val showOpensAt = (beforeOpen || wellPastClose) && lift.startTime.isNotBlank()
+
+        data class DR(val st: String, val sc: String, val wt: String, val dt: String, val col: Boolean = false)
+        val r = when {
+            lift.liftStatus.apiValue == "OPERATION_TEMPORARILY_SUSPENDED" -> DR("hold", "hold", "", "")
+            lift.liftStatus.apiValue in listOf("SUSPENDED_CLOSED", "CLOSED") && !scheduled -> {
+                val st = if (showOpensAt) "opens ${TimeUtils.fmtTime(lift.startTime)}" else "closed"
+                DR(st, if (showOpensAt) "opens" else "closed", "", "")
+            }
+            lift.liftStatus.apiValue in listOf("SUSPENDED_CLOSED", "CLOSED") && scheduled -> {
+                val pastOpen = startMin != null && nowMin >= startMin
+                if (!pastClose && pastOpen) DR("delayed?", "delayed", "", "")
+                else if (lift.startTime.isNotBlank()) DR("opens ${TimeUtils.fmtTime(lift.startTime)}", "opens", "", "")
+                else DR("closed", "closed", "", "")
+            }
+            lift.isRunning -> {
+                val wait = lift.waitMinutes
+                val wt = when { wait == null -> ""; wait == 0 -> "0m"; else -> "${wait}m" }
+                when {
+                    closingSoon -> DR("closes in ${minsLeft}m", "closing-soon", "", "", col = true)
+                    pastClose -> DR("open", "operating", "", if (lift.endTime.isNotBlank()) "closed at ${TimeUtils.fmtTime(lift.endTime)}" else "")
+                    wait != null -> DR("", "", wt, "")
+                    else -> DR("open", "operating", "", "")
+                }
+            }
+            lift.liftStatus.apiValue == "STANDBY" -> {
+                val st = if (showOpensAt) "opens ${TimeUtils.fmtTime(lift.startTime)}" else "standby"
+                DR(st, if (showOpensAt) "opens" else "standby", "", "")
+            }
+            else -> DR("closed", "closed", "", "")
+        }
+        detailText = r.dt
+        val stripOpens = { t: String -> if (t.startsWith("opens ")) t.substring(6) else t }
+        if (r.st.isNotEmpty() && r.wt.isNotEmpty()) {
+            renderedLeft = r.st; renderedRight = r.wt; leftCls = r.sc; rightCls = "wait"
+        } else if (hasAnyWait && r.col) {
+            renderedLeft = r.st; renderedRight = ""; leftCls = r.sc; rightCls = ""
+        } else {
+            val text = r.wt.ifEmpty { r.st }
+            renderedLeft = ""; renderedRight = stripOpens(text); leftCls = ""; rightCls = if (r.wt.isNotEmpty()) "wait" else r.sc
+        }
+    }
+
+    fun statusColor(cls: String): androidx.compose.ui.graphics.Color = when (cls) {
+        "operating" -> colors.statusOpen
+        "closed" -> colors.statusClosed
+        "on-hold", "hold" -> colors.statusOnHold
+        "opens" -> colors.statusOpens
+        "closing-soon" -> colors.statusClosingSoon
+        "standby" -> colors.statusStandby
+        "delayed" -> colors.statusOnHold
+        else -> colors.textDim
+    }
+    fun waitColor2(text: String): androidx.compose.ui.graphics.Color {
+        val mins = text.removeSuffix("m").toIntOrNull() ?: return colors.textDim
+        return when { mins <= 5 -> colors.waitLow; mins <= 15 -> colors.waitMid; else -> colors.waitHigh }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -245,109 +328,34 @@ private fun LiftRow(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            val pastClose = TimeUtils.isPastClose(lift.endTime, timezone)
-            val timeLabel = TimeUtils.liftTimeLabel(lift.startTime, lift.endTime, timezone, lift.status)
-            val detailText = if (pastClose && lift.endTime.isNotBlank()) {
-                "closed at ${TimeUtils.fmtTime(lift.endTime)}"
-            } else if (timeLabel.isNotEmpty()) {
-                timeLabel
-            } else {
-                "${TimeUtils.fmtTime(lift.startTime)} – ${TimeUtils.fmtTime(lift.endTime)}"
-            }
             Text(detailText, color = colors.textDim, fontSize = 10.scaledSp, modifier = Modifier.weight(1f))
 
-            // Status column
-            val closingSoon = lift.isRunning && TimeUtils.isClosingSoon(lift.startTime, lift.endTime, timezone)
-            if (closingSoon) {
-                val minsLeft = maxOf(0, TimeUtils.toMin(lift.endTime) - TimeUtils.nowMinutes(timezone))
+            if (hasAnyWait) {
+                Text(renderedLeft, color = statusColor(leftCls), fontSize = 10.scaledSp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.End)
                 Text(
-                    "closes in ${minsLeft}m",
-                    color = colors.statusClosingSoon,
-                    fontSize = 10.scaledSp,
-                    fontWeight = FontWeight.SemiBold,
-                    textAlign = TextAlign.End,
-                )
-            } else if (lift.vailStatus == "Scheduled" && lift.startTime.isNotBlank()) {
-                val nowMin = TimeUtils.nowMinutes(timezone)
-                val startMin = TimeUtils.toMin(lift.startTime)
-                if (nowMin >= startMin && pastClose) {
-                    Text(
-                        "closed",
-                        color = colors.statusClosed,
-                        fontSize = 10.scaledSp,
-                        fontWeight = FontWeight.SemiBold,
-                        textAlign = TextAlign.End,
-                    )
-                } else {
-                    Text(
-                        "opens ${TimeUtils.fmtTime(lift.startTime)}",
-                        color = colors.statusOpens,
-                        fontSize = 10.scaledSp,
-                        fontWeight = FontWeight.SemiBold,
-                        textAlign = TextAlign.End,
-                    )
-                }
-            } else if (lift.isRunning && pastClose) {
-                Text(
-                    lift.liftStatus.label,
-                    color = colors.statusStandby,
-                    fontSize = 10.scaledSp,
-                    fontWeight = FontWeight.SemiBold,
-                    textAlign = TextAlign.End,
+                    renderedRight,
+                    color = if (rightCls == "wait" || (d != null && d.rightCls.startsWith("wait"))) waitColor2(renderedRight) else statusColor(rightCls),
+                    fontSize = 10.scaledSp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.End, modifier = Modifier.width(36.dp),
                 )
             } else {
-                Text(
-                    lift.liftStatus.label,
-                    color = lift.liftStatus.color,
-                    fontSize = 10.scaledSp,
-                    fontWeight = FontWeight.SemiBold,
-                    textAlign = TextAlign.End,
-                )
-            }
-
-            // Wait column (only if any lift in this resort has waits)
-            if (hasAnyWait) {
-                Text(
-                    if (lift.waitMinutes > 0) "${lift.waitMinutes}m" else "",
-                    color = if (lift.waitMinutes > 0) waitColor(lift.waitMinutes) else colors.textDim,
-                    fontSize = 10.scaledSp,
-                    fontWeight = FontWeight.SemiBold,
-                    textAlign = TextAlign.End,
-                    modifier = Modifier.width(28.dp),
-                )
+                Text(renderedRight, color = statusColor(rightCls), fontSize = 10.scaledSp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.End)
             }
         }
 
-        AnimatedVisibility(
-            visible = isExpanded,
-            enter = expandVertically(),
-            exit = shrinkVertically(),
-        ) {
+        AnimatedVisibility(visible = isExpanded, enter = expandVertically(), exit = shrinkVertically()) {
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 4.dp, bottom = 2.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(colors.card)
-                    .padding(8.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 2.dp)
+                    .clip(RoundedCornerShape(6.dp)).background(colors.card).padding(8.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 DetailRow("Hours", "${TimeUtils.fmtTime(lift.startTime)} – ${TimeUtils.fmtTime(lift.endTime)}")
                 lift.liftType?.let { type ->
                     DetailRow("Type", type.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() })
                 }
-                lift.capacity?.let { cap ->
-                    DetailRow("Capacity", "$cap seats")
-                }
-                if (lift.waitMinutes > 0) {
-                    DetailRow("Wait", "${lift.waitMinutes}m wait")
-                }
-                lift.comment?.let { comment ->
-                    DetailRow("Note", comment)
-                }
-                lift.updateDate?.let { updated ->
-                    DetailRow("Updated", TimeUtils.timeAgo(updated))
-                }
+                lift.capacity?.let { cap -> DetailRow("Capacity", "$cap seats") }
+                if (lift.waitMinutes != null && lift.waitMinutes > 0) DetailRow("Wait", "${lift.waitMinutes}m wait")
+                lift.comment?.let { comment -> DetailRow("Note", comment) }
+                lift.updateDate?.let { updated -> DetailRow("Updated", TimeUtils.timeAgo(updated)) }
             }
         }
     }

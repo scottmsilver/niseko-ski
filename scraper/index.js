@@ -608,6 +608,159 @@ async function getTrailMapImage(slug) {
 }
 
 // ---------------------------------------------------------------------------
+// Display computation: normalize raw data + augment with display instructions
+// ---------------------------------------------------------------------------
+const { augmentDisplay } = require('./display');
+
+// Timezone per resort (must match client-side adapter definitions)
+const RESORT_TIMEZONES = {
+  // Vail resorts
+  vail: 'America/Denver', beavercreek: 'America/Denver', breckenridge: 'America/Denver',
+  keystone: 'America/Denver', crestedbutte: 'America/Denver', parkcity: 'America/Denver',
+  heavenly: 'America/Los_Angeles', northstar: 'America/Los_Angeles', kirkwood: 'America/Los_Angeles',
+  stevenspass: 'America/Los_Angeles', whistlerblackcomb: 'America/Vancouver',
+  stowe: 'America/New_York', okemo: 'America/New_York', mtsnow: 'America/New_York',
+  mountsunapee: 'America/New_York', attitashmountain: 'America/New_York',
+  wildcatmountain: 'America/New_York', crotchedmountain: 'America/New_York',
+  hunter: 'America/New_York', sevensprings: 'America/New_York',
+  libertymountain: 'America/New_York', roundtopmountain: 'America/New_York',
+  whitetail: 'America/New_York', jackfrostbigboulder: 'America/New_York',
+  hiddenvalleypa: 'America/New_York', laurelmountain: 'America/New_York',
+  aftonalps: 'America/Chicago', mtbrighton: 'America/Detroit',
+  wilmotmountain: 'America/Chicago', alpinevalley: 'America/New_York',
+  bmbw: 'America/New_York', madrivermountain: 'America/New_York',
+  hiddenvalley: 'America/Chicago', snowcreek: 'America/Chicago',
+  paolipeaks: 'America/Indiana/Indianapolis',
+  // Ikon
+  alta: 'America/Denver', snowbird: 'America/Denver',
+};
+
+const VAIL_STATUS_MAP = { Open: 'OPERATING', Scheduled: 'CLOSED', OnHold: 'ON_HOLD', Closed: 'CLOSED' };
+
+// Normalize raw Vail TerrainStatusFeed into the shared format
+function normalizeVailData(slug, raw) {
+  const timezone = RESORT_TIMEZONES[slug] || 'America/Denver';
+  const areas = {};
+  for (const lift of (raw.Lifts || [])) {
+    const area = lift.Mountain || slug;
+    if (!areas[area]) areas[area] = [];
+    const status = VAIL_STATUS_MAP[lift.Status] || 'CLOSED';
+    areas[area].push({
+      id: lift.Name, name: lift.Name,
+      status,
+      scheduled: lift.Status === 'Scheduled',
+      start_time: (lift.OpenTime && lift.OpenTime !== 'null') ? lift.OpenTime : null,
+      end_time: (lift.CloseTime && lift.CloseTime !== 'null') ? lift.CloseTime : null,
+      waitMinutes: lift.WaitTimeInMinutes != null ? lift.WaitTimeInMinutes : null,
+      updateDate: null,
+      liftType: lift.Type || null,
+      capacity: lift.Capacity || null,
+    });
+  }
+  const subResorts = Object.entries(areas).map(([name, lifts]) => ({
+    id: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+    name, lifts,
+  }));
+  return augmentDisplay(subResorts, timezone);
+}
+
+// Normalize raw Alta data into the shared format
+function normalizeAltaData(raw) {
+  const lifts = (raw.lifts || []).map(lift => ({
+    id: lift.name, name: lift.name,
+    status: lift.open ? 'OPERATING' : 'CLOSED',
+    scheduled: !lift.open && lift.opening_at != null,
+    start_time: lift.opening_at || null,
+    end_time: lift.closing_at || null,
+    waitMinutes: null,
+    updateDate: null,
+  }));
+  const subResorts = [{ id: 'alta', name: 'Alta', lifts }];
+  return augmentDisplay(subResorts, 'America/Denver');
+}
+
+// Normalize raw Snowbird lifts array
+function normalizeSnowbirdData(raw) {
+  const SNOWBIRD_STATUS = { open: 'OPERATING', expected: 'CLOSED', closed: 'CLOSED' };
+  function to24Local(s) {
+    const m = s.match(/(\d+)(?::(\d+))?\s*(AM|PM)/i);
+    if (!m) return null;
+    let h = parseInt(m[1], 10);
+    const min = m[2] || '00';
+    const ampm = m[3].toUpperCase();
+    if (ampm === 'PM' && h !== 12) h += 12;
+    if (ampm === 'AM' && h === 12) h = 0;
+    return String(h).padStart(2, '0') + ':' + min;
+  }
+
+  const areas = {};
+  for (const lift of (raw || [])) {
+    const area = (lift.sector && lift.sector.name) || 'Snowbird';
+    if (!areas[area]) areas[area] = [];
+    const status = SNOWBIRD_STATUS[lift.status] || 'CLOSED';
+    let start = null, end = null;
+    if (lift.hours) {
+      const m = lift.hours.trim().match(/^([\d:]+\s*[AP]M)\s*-\s*([\d:]+\s*[AP]M)$/i);
+      if (m) { start = to24Local(m[1]); end = to24Local(m[2]); }
+    }
+    areas[area].push({
+      id: lift.name, name: lift.name,
+      status,
+      scheduled: lift.status === 'expected',
+      start_time: start, end_time: end,
+      waitMinutes: null, updateDate: null,
+    });
+  }
+  const subResorts = Object.entries(areas).map(([name, lifts]) => ({
+    id: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+    name, lifts,
+  }));
+  return augmentDisplay(subResorts, 'America/Denver');
+}
+
+// Normalize raw Niseko (yukiyama) data into shared format
+const NISEKO_SUB_RESORTS = [
+  { id: '379', name: 'Hanazono' },
+  { id: '390', name: 'Grand Hirafu' },
+  { id: '393', name: 'Annupuri' },
+  { id: '394', name: 'Niseko Village' },
+];
+const NISEKO_STATUS_MAP = { OPERATION_TEMPORARILY_SUSPENDED: 'ON_HOLD', SUSPENDED_CLOSED: 'CLOSED' };
+
+function fetchNisekoLifts(skiareaId) {
+  return new Promise((resolve, reject) => {
+    const url = `https://web-api.yukiyama.biz/web-api/latest-facility/backward?facilityType=lift&lang=en&skiareaId=${skiareaId}`;
+    https.get(url, { headers: { Accept: 'application/json', Referer: 'https://www.niseko.ne.jp/' } }, (r) => {
+      const chunks = [];
+      r.on('data', c => chunks.push(c));
+      r.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString())); } catch (e) { reject(e); } });
+    }).on('error', reject);
+  });
+}
+
+async function normalizeNisekoData() {
+  const results = await Promise.all(NISEKO_SUB_RESORTS.map(async (r) => {
+    try {
+      const data = await fetchNisekoLifts(r.id);
+      const lifts = (data.results || []).map(l => ({
+        id: l.id, name: l.name,
+        status: NISEKO_STATUS_MAP[l.status] || l.status,
+        scheduled: false,
+        start_time: l.start_time || null,
+        end_time: l.end_time || null,
+        waitMinutes: null,
+        updateDate: l.updateDate || null,
+        comment: l.comment || null,
+      }));
+      return { id: r.id, name: r.name, lifts };
+    } catch (_) {
+      return { id: r.id, name: r.name, lifts: null };
+    }
+  }));
+  return augmentDisplay(results, 'Asia/Tokyo');
+}
+
+// ---------------------------------------------------------------------------
 // HTTP server
 // ---------------------------------------------------------------------------
 const server = http.createServer(async (req, res) => {
@@ -632,6 +785,48 @@ const server = http.createServer(async (req, res) => {
   // --- /resorts ---
   if (path === '/resorts') {
     res.end(JSON.stringify(Object.keys(TERRAIN_URLS)));
+    return;
+  }
+
+  // --- /display/{slug} --- normalized lift data with display instructions
+  const displayMatch = path.match(/^\/display\/([a-z]+)$/);
+  if (displayMatch) {
+    const dSlug = displayMatch[1];
+    try {
+      let subResorts;
+      if (dSlug === 'niseko') {
+        subResorts = await normalizeNisekoData();
+      } else if (dSlug === 'alta') {
+        const data = await getAltaData();
+        subResorts = normalizeAltaData(data);
+      } else if (dSlug === 'snowbird') {
+        const snowbirdRes = await new Promise((resolve, reject) => {
+          https.get('https://api.snowbird.com/api/v1/dor/drupal/lifts', { headers: { Accept: 'application/json' } }, (r) => {
+            const chunks = [];
+            r.on('data', c => chunks.push(c));
+            r.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString())); } catch (e) { reject(e); } });
+          }).on('error', reject);
+        });
+        subResorts = normalizeSnowbirdData(snowbirdRes);
+      } else if (TERRAIN_URLS[dSlug]) {
+        const data = await getResortData(dSlug);
+        if (!data) {
+          res.statusCode = 503;
+          res.end(JSON.stringify({ error: 'No data yet' }));
+          return;
+        }
+        subResorts = normalizeVailData(dSlug, data);
+      } else {
+        res.statusCode = 404;
+        res.end(JSON.stringify({ error: `Unknown resort: ${dSlug}` }));
+        return;
+      }
+      res.end(JSON.stringify({ subResorts }));
+    } catch (e) {
+      log(`[display:${dSlug}] Error: ${e.message}`);
+      res.statusCode = 500;
+      res.end(JSON.stringify({ error: e.message }));
+    }
     return;
   }
 

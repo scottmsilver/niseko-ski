@@ -298,7 +298,37 @@ else
 fi
 
 # ===========================================================================
-# 10. ERROR HANDLING
+# 10. DISPLAY ENDPOINT
+# ===========================================================================
+echo ""
+echo "--- Display endpoint (server-vended display instructions) ---"
+
+assert_status "Display endpoint /display/alta returns 200"    "$BASE/api/display/alta"    "200" 20
+assert_status "Display endpoint /display/niseko returns 200"  "$BASE/api/display/niseko"  "200" 15
+assert_status "Display endpoint /display/snowbird returns 200" "$BASE/api/display/snowbird" "200" 20
+
+# Check that display data contains expected fields
+DISPLAY_BODY=$(curl -s --max-time 20 "$BASE/api/display/alta" 2>/dev/null || echo "")
+if echo "$DISPLAY_BODY" | grep -q '"display"'; then
+  pass "Display endpoint returns display field on lifts"
+else
+  fail "Display endpoint missing display field"
+fi
+if echo "$DISPLAY_BODY" | grep -q '"rightCls"'; then
+  pass "Display data includes rendered column classes"
+else
+  fail "Display data missing rendered column classes"
+fi
+if echo "$DISPLAY_BODY" | grep -q '"subResorts"'; then
+  pass "Display endpoint returns subResorts structure"
+else
+  fail "Display endpoint missing subResorts structure"
+fi
+
+assert_status "Display endpoint unknown resort returns 404"   "$BASE/api/display/fakesort" "404" 5
+
+# ===========================================================================
+# 11. ERROR HANDLING
 # ===========================================================================
 echo ""
 echo "--- Error handling ---"

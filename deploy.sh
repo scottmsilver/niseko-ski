@@ -171,6 +171,7 @@ phase2_deploy() {
 
   push_file "$REPO_DIR/scraper/package.json" "/app/scraper/package.json"
   push_file "$REPO_DIR/scraper/index.js"     "/app/scraper/index.js"
+  push_file "$REPO_DIR/scraper/display.js"   "/app/scraper/display.js"
 
   if [ "$need_npm" -eq 1 ]; then
     info "Running npm install (package.json changed)"

@@ -20,7 +20,7 @@ COPY data/ /usr/share/nginx/html/data/
 WORKDIR /app/scraper
 COPY scraper/package.json .
 RUN npm install --production
-COPY scraper/index.js .
+COPY scraper/index.js scraper/display.js ./
 
 # Copy supervisor config
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf

@@ -181,26 +181,31 @@ RESORT_ADAPTERS.niseko = {
   },
 
   async fetchData() {
-    const [lifts, weather] = await Promise.all([
-      this.fetchResortData('lifts'),
+    const [displayRes, weather] = await Promise.all([
+      fetch('/api/display/niseko').then(r => r.ok ? r.json() : null).catch(() => null),
       this.fetchResortData('weather'),
     ]);
-    const subResorts = this.RESORTS.map(r => ({
-      id: r.id,
-      name: r.name,
-      lifts: lifts[r.id] ? lifts[r.id].map(l => ({
-        id: l.id,
-        name: l.name,
-        status: NISEKO_STATUS_MAP[l.status] || l.status,
-        scheduled: false,
-        start_time: l.start_time,
-        end_time: l.end_time,
-        updateDate: l.updateDate,
-        comment: l.comment || null,
-        waitMinutes: null,
-      })) : null,
-      weather: weather[r.id] || null,
-    }));
+    let subResorts;
+    if (displayRes && displayRes.subResorts) {
+      // Server-vended display data — merge weather
+      subResorts = displayRes.subResorts.map(sr => ({
+        ...sr,
+        weather: weather[sr.id] || null,
+      }));
+    } else {
+      // Fallback: fetch raw lift data client-side
+      const lifts = await this.fetchResortData('lifts');
+      subResorts = this.RESORTS.map(r => ({
+        id: r.id, name: r.name,
+        lifts: lifts[r.id] ? lifts[r.id].map(l => ({
+          id: l.id, name: l.name,
+          status: NISEKO_STATUS_MAP[l.status] || l.status,
+          scheduled: false, start_time: l.start_time, end_time: l.end_time,
+          updateDate: l.updateDate, comment: l.comment || null, waitMinutes: null,
+        })) : null,
+        weather: weather[r.id] || null,
+      }));
+    }
     return { subResorts, capabilities: this.capabilities };
   },
 
@@ -297,37 +302,10 @@ function createVailAdapter(resort) {
     capabilities: { weather: true, trailMap: true, interactiveMap: false },
 
     async fetchData() {
-      const [terrainRes, weatherRes] = await Promise.all([
-        fetch(`/api/vail/${resort.id}/terrain`),
+      const [displayRes, weatherRes] = await Promise.all([
+        fetch(`/api/display/${resort.id}`).then(r => r.ok ? r.json() : null).catch(() => null),
         fetch(`/api/vail/${resort.id}/weather`).catch(() => null),
       ]);
-      if (!terrainRes.ok) throw new Error(`Terrain HTTP ${terrainRes.status}`);
-      const terrain = await terrainRes.json();
-      if (terrain.error) throw new Error(terrain.error);
-
-      // Group lifts by mountain area
-      const areas = {};
-      for (const lift of (terrain.Lifts || [])) {
-        const area = lift.Mountain || resort.name;
-        if (!areas[area]) areas[area] = [];
-        let status = VAIL_STATUS_MAP[lift.Status];
-        if (!status) {
-          console.warn(`${resort.name}: unknown status "${lift.Status}" for "${lift.Name}"`);
-          status = 'CLOSED';
-        }
-        areas[area].push({
-          id: lift.Name,
-          name: lift.Name,
-          status: status,
-          scheduled: lift.Status === 'Scheduled',
-          start_time: lift.OpenTime || null,
-          end_time: lift.CloseTime || null,
-          waitMinutes: lift.WaitTimeInMinutes != null ? lift.WaitTimeInMinutes : null,
-          updateDate: null,
-          liftType: lift.Type || null,
-          capacity: lift.Capacity || null,
-        });
-      }
 
       // Build weather from Vail weather API
       let weather = null;
@@ -351,12 +329,33 @@ function createVailAdapter(resort) {
         }
       }
 
-      const subResorts = Object.entries(areas).map(([name, lifts]) => ({
-        id: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
-        name: name,
-        lifts: lifts,
-        weather: null,
-      }));
+      let subResorts;
+      if (displayRes && displayRes.subResorts) {
+        // Server-vended display data
+        subResorts = displayRes.subResorts.map(sr => ({ ...sr, weather: null }));
+      } else {
+        // Fallback: fetch raw terrain and parse client-side
+        const terrainRes = await fetch(`/api/vail/${resort.id}/terrain`);
+        if (!terrainRes.ok) throw new Error(`Terrain HTTP ${terrainRes.status}`);
+        const terrain = await terrainRes.json();
+        if (terrain.error) throw new Error(terrain.error);
+        const areas = {};
+        for (const lift of (terrain.Lifts || [])) {
+          const area = lift.Mountain || resort.name;
+          if (!areas[area]) areas[area] = [];
+          let status = VAIL_STATUS_MAP[lift.Status];
+          if (!status) { console.warn(`${resort.name}: unknown status "${lift.Status}" for "${lift.Name}"`); status = 'CLOSED'; }
+          areas[area].push({
+            id: lift.Name, name: lift.Name, status, scheduled: lift.Status === 'Scheduled',
+            start_time: lift.OpenTime || null, end_time: lift.CloseTime || null,
+            waitMinutes: lift.WaitTimeInMinutes != null ? lift.WaitTimeInMinutes : null,
+            updateDate: null, liftType: lift.Type || null, capacity: lift.Capacity || null,
+          });
+        }
+        subResorts = Object.entries(areas).map(([name, lifts]) => ({
+          id: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), name, lifts, weather: null,
+        }));
+      }
 
       // Attach weather to first sub-resort
       if (weather && subResorts.length > 0) {
@@ -386,10 +385,14 @@ RESORT_ADAPTERS.snowbird = {
   capabilities: { weather: false, trailMap: true, interactiveMap: false },
 
   async fetchData() {
+    const displayRes = await fetch('/api/display/snowbird').then(r => r.ok ? r.json() : null).catch(() => null);
+    if (displayRes && displayRes.subResorts) {
+      return { subResorts: displayRes.subResorts.map(sr => ({ ...sr, weather: null })), capabilities: this.capabilities };
+    }
+    // Fallback: parse client-side
     const res = await fetch('/api/snowbird/lifts');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const lifts = await res.json();
-
     const areas = {};
     for (const lift of lifts) {
       const area = lift.sector?.name || 'Snowbird';
@@ -400,23 +403,11 @@ RESORT_ADAPTERS.snowbird = {
         const m = lift.hours.trim().match(/^([\d:]+\s*[AP]M)\s*-\s*([\d:]+\s*[AP]M)$/i);
         if (m) { start = to24(m[1]); end = to24(m[2]); }
       }
-      areas[area].push({
-        id: lift.name,
-        name: lift.name,
-        status,
-        scheduled: lift.status === 'expected',
-        start_time: start,
-        end_time: end,
-        waitMinutes: null,
-        updateDate: null,
-      });
+      areas[area].push({ id: lift.name, name: lift.name, status, scheduled: lift.status === 'expected', start_time: start, end_time: end, waitMinutes: null, updateDate: null });
     }
-
     const subResorts = Object.entries(areas).map(([name, lifts]) => ({
-      id: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
-      name, lifts, weather: null,
+      id: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), name, lifts, weather: null,
     }));
-
     return { subResorts, capabilities: this.capabilities };
   },
 };
@@ -434,28 +425,22 @@ RESORT_ADAPTERS.alta = {
   capabilities: { weather: false, trailMap: true, interactiveMap: false },
 
   async fetchData() {
+    const displayRes = await fetch('/api/display/alta').then(r => r.ok ? r.json() : null).catch(() => null);
+    if (displayRes && displayRes.subResorts) {
+      return { subResorts: displayRes.subResorts.map(sr => ({ ...sr, weather: null })), capabilities: this.capabilities };
+    }
+    // Fallback: parse client-side
     const res = await fetch('/api/alta');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-
-    const lifts = (data.lifts || []).map(lift => {
-      const status = lift.open ? 'OPERATING' : 'CLOSED';
-      return {
-        id: lift.name,
-        name: lift.name,
-        status,
-        scheduled: !lift.open && lift.opening_at != null,
-        start_time: lift.opening_at || null,
-        end_time: lift.closing_at || null,
-        waitMinutes: null,
-        updateDate: null,
-      };
-    });
-
-    return {
-      subResorts: [{ id: 'alta', name: 'Alta', lifts, weather: null }],
-      capabilities: this.capabilities,
-    };
+    const lifts = (data.lifts || []).map(lift => ({
+      id: lift.name, name: lift.name,
+      status: lift.open ? 'OPERATING' : 'CLOSED',
+      scheduled: !lift.open && lift.opening_at != null,
+      start_time: lift.opening_at || null, end_time: lift.closing_at || null,
+      waitMinutes: null, updateDate: null,
+    }));
+    return { subResorts: [{ id: 'alta', name: 'Alta', lifts, weather: null }], capabilities: this.capabilities };
   },
 };
 
@@ -1524,11 +1509,15 @@ function renderLifts(data) {
       info.appendChild(detail);
 
       // Two-column display (status + wait + subtitle)
-      const display = computeLiftDisplay(l, adapter);
-      detail.textContent = display.detailText;
+      // Use server-vended display data if available, otherwise compute client-side
+      const cols = l.display || (() => {
+        const d = computeLiftDisplay(l, adapter);
+        const c = computeRenderedColumns(d, hasAnyWait);
+        return { detailText: d.detailText, left: c.left, leftCls: c.leftCls, right: c.right, rightCls: c.rightCls };
+      })();
+      detail.textContent = cols.detailText || '';
       row.appendChild(info);
 
-      const cols = computeRenderedColumns(display, hasAnyWait);
       if (hasAnyWait) {
         const statusEl = document.createElement('div');
         statusEl.className = 'lift-status-text ' + cols.leftCls;

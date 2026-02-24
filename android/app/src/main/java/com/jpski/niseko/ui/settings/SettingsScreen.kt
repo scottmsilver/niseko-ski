@@ -86,6 +86,38 @@ fun SettingsScreen(
                     }
                 }
             }
+
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "Ikon Pass",
+                color = colors.textDim,
+                fontSize = 14.scaledSp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(8.dp))
+
+            val ikonRegionGroups = IKON_RESORTS.groupBy { it.region }
+            for ((region, resorts) in ikonRegionGroups) {
+                Text(
+                    region,
+                    color = colors.textDim,
+                    fontSize = 11.scaledSp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    for (resort in resorts) {
+                        CompactResortCard(
+                            name = resort.name,
+                            isSelected = resort.id == activeResortId,
+                            onClick = { onResortSelected(resort.id) },
+                        )
+                    }
+                }
+            }
         }
 
         // Theme picker

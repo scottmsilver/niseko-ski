@@ -8,6 +8,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
@@ -55,18 +56,82 @@ class SkiApi {
     suspend fun fetchData(resort: ResortConfig): FetchResult = when (resort.type) {
         ResortType.NISEKO -> fetchNisekoData(resort)
         ResortType.VAIL -> fetchVailData(resort)
+        ResortType.ALTA -> fetchAltaData(resort)
+        ResortType.SNOWBIRD -> fetchSnowbirdData(resort)
+    }
+
+    // ── Display endpoint (server-vended) ──
+
+    private fun fetchDisplayData(resortId: String): List<SubResortData>? {
+        val json = fetchJson("$API_BASE/api/display/$resortId") ?: return null
+        val subResortsArr = json.optJSONArray("subResorts") ?: return null
+        return try {
+            (0 until subResortsArr.length()).map { i ->
+                val sr = subResortsArr.getJSONObject(i)
+                val liftsArr = sr.optJSONArray("lifts")
+                val lifts = if (liftsArr != null) {
+                    (0 until liftsArr.length()).map { j ->
+                        val obj = liftsArr.getJSONObject(j)
+                        val displayObj = obj.optJSONObject("display")
+                        val display = if (displayObj != null) LiftDisplay(
+                            detailText = displayObj.optString("detailText", ""),
+                            left = displayObj.optString("left", ""),
+                            leftCls = displayObj.optString("leftCls", ""),
+                            right = displayObj.optString("right", ""),
+                            rightCls = displayObj.optString("rightCls", ""),
+                        ) else null
+                        LiftInfo(
+                            id = when (val idVal = obj.opt("id")) {
+                                is Int -> idVal
+                                is Number -> idVal.toInt()
+                                is String -> idVal.hashCode()
+                                else -> j
+                            },
+                            name = obj.optString("name", ""),
+                            status = obj.optString("status", "CLOSED"),
+                            startTime = obj.optString("start_time", "").let { if (it == "null") "" else it },
+                            endTime = obj.optString("end_time", "").let { if (it == "null") "" else it },
+                            updateDate = obj.optString("updateDate", null).takeIf { !it.isNullOrBlank() && it != "null" },
+                            liftType = obj.optString("liftType", null).takeIf { !it.isNullOrBlank() && it != "null" },
+                            capacity = if (obj.has("capacity") && !obj.isNull("capacity")) obj.optInt("capacity", 0).takeIf { it > 0 } else null,
+                            waitMinutes = if (obj.has("waitMinutes") && !obj.isNull("waitMinutes")) obj.optInt("waitMinutes", 0) else null,
+                            comment = obj.optString("comment", null).takeIf { !it.isNullOrBlank() && it != "null" },
+                            display = display,
+                        )
+                    }
+                } else null
+                SubResortData(
+                    id = sr.optString("id", ""),
+                    name = sr.optString("name", ""),
+                    lifts = lifts,
+                    weather = null,
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse display data for $resortId", e)
+            null
+        }
     }
 
     // ── Niseko ──
 
     private suspend fun fetchNisekoData(resort: ResortConfig): FetchResult = coroutineScope {
-        val subResorts = NISEKO_SUB_RESORTS.map { sub ->
-            async(Dispatchers.IO) {
-                val lifts = fetchNisekoLifts(sub.id)
-                val weather = fetchNisekoWeather(sub.id)
-                SubResortData(sub.id, sub.name, lifts, weather)
+        val displayDeferred = async(Dispatchers.IO) { fetchDisplayData("niseko") }
+        val weatherDeferreds = NISEKO_SUB_RESORTS.map { sub ->
+            async(Dispatchers.IO) { sub.id to fetchNisekoWeather(sub.id) }
+        }
+        val displaySubs = displayDeferred.await()
+        val weatherMap = weatherDeferreds.awaitAll().toMap()
+
+        val subResorts = if (displaySubs != null) {
+            // Merge server-vended lifts with client-fetched weather
+            displaySubs.map { sr -> sr.copy(weather = weatherMap[sr.id]) }
+        } else {
+            // Fallback: fetch everything client-side
+            NISEKO_SUB_RESORTS.map { sub ->
+                SubResortData(sub.id, sub.name, fetchNisekoLifts(sub.id), weatherMap[sub.id])
             }
-        }.awaitAll()
+        }
         FetchResult(subResorts, resort.capabilities)
     }
 
@@ -118,10 +183,12 @@ class SkiApi {
     // ── Vail ──
 
     private suspend fun fetchVailData(resort: ResortConfig): FetchResult = coroutineScope {
-        val terrainDeferred = async(Dispatchers.IO) { fetchVailTerrain(resort) }
+        val displayDeferred = async(Dispatchers.IO) { fetchDisplayData(resort.id) }
         val weatherDeferred = async(Dispatchers.IO) { fetchVailWeather(resort) }
-        val subResorts = terrainDeferred.await()
+        val displaySubs = displayDeferred.await()
         val weather = weatherDeferred.await()
+
+        val subResorts = displaySubs ?: fetchVailTerrain(resort)
 
         // Attach weather to first sub-resort
         val result = if (weather != null && subResorts.isNotEmpty()) {
@@ -150,11 +217,11 @@ class SkiApi {
                 id = obj.optString("Name", "").hashCode(),
                 name = obj.optString("Name", ""),
                 status = status.apiValue,
-                startTime = obj.optString("OpenTime", "").ifBlank { "08:00" },
-                endTime = obj.optString("CloseTime", "").ifBlank { "16:00" },
+                startTime = obj.optString("OpenTime", "").let { if (it.isBlank() || it == "null") "" else it },
+                endTime = obj.optString("CloseTime", "").let { if (it.isBlank() || it == "null") "" else it },
                 liftType = obj.optString("Type", null).takeIf { !it.isNullOrBlank() },
                 capacity = if (obj.has("Capacity") && obj.optInt("Capacity", 0) > 0) obj.optInt("Capacity") else null,
-                waitMinutes = obj.optInt("WaitTimeInMinutes", 0),
+                waitMinutes = if (obj.has("WaitTimeInMinutes") && !obj.isNull("WaitTimeInMinutes")) obj.optInt("WaitTimeInMinutes", 0) else null,
                 vailStatus = statusStr,
             )
 
@@ -168,6 +235,25 @@ class SkiApi {
                 lifts = lifts,
                 weather = null,
             )
+        }
+    }
+
+    private fun fetchJsonArray(url: String): JSONArray? {
+        val request = Request.Builder()
+            .url(url)
+            .addHeader("Accept", "application/json")
+            .build()
+        return try {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "HTTP ${response.code} for $url")
+                    return null
+                }
+                JSONArray(response.body?.string() ?: return null)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "fetchJsonArray failed for $url", e)
+            null
         }
     }
 
@@ -202,5 +288,115 @@ class SkiApi {
             Log.e(TAG, "Failed to parse Vail weather for ${resort.id}", e)
             null
         }
+    }
+
+    // ── Alta ──
+
+    private suspend fun fetchAltaData(resort: ResortConfig): FetchResult = coroutineScope {
+        val displaySubs = async(Dispatchers.IO) { fetchDisplayData("alta") }.await()
+        val subResorts = displaySubs ?: listOf(SubResortData("alta", "Alta", fetchAltaLifts(), null))
+        FetchResult(subResorts = subResorts, capabilities = resort.capabilities)
+    }
+
+    private fun fetchAltaLifts(): List<LiftInfo>? {
+        val json = fetchJson("$API_BASE/api/alta") ?: return null
+        val liftsArray = json.optJSONArray("lifts") ?: return emptyList()
+        return try {
+            (0 until liftsArray.length()).map { i ->
+                val obj = liftsArray.getJSONObject(i)
+                val isOpen = obj.optBoolean("open", false)
+                val status = if (isOpen) LiftStatus.OPERATING else LiftStatus.CLOSED
+                LiftInfo(
+                    id = obj.optString("name", "").hashCode(),
+                    name = obj.optString("name", ""),
+                    status = status.apiValue,
+                    startTime = obj.optString("opening_at", "").ifBlank { "08:00" },
+                    endTime = obj.optString("closing_at", "").ifBlank { "16:00" },
+                    vailStatus = if (isOpen) "Open" else if (obj.has("opening_at") && obj.optString("opening_at", "").isNotBlank()) "Scheduled" else "Closed",
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse Alta lifts", e)
+            null
+        }
+    }
+
+    // ── Snowbird ──
+
+    private suspend fun fetchSnowbirdData(resort: ResortConfig): FetchResult = coroutineScope {
+        val displaySubs = async(Dispatchers.IO) { fetchDisplayData("snowbird") }.await()
+        if (displaySubs != null) {
+            return@coroutineScope FetchResult(displaySubs, resort.capabilities)
+        }
+        // Fallback: fetch and parse client-side
+        val lifts = async(Dispatchers.IO) { fetchSnowbirdLifts() }.await()
+        val areas = mutableMapOf<String, MutableList<LiftInfo>>()
+        lifts?.forEach { lift ->
+            val area = lift.comment ?: "Snowbird"
+            areas.getOrPut(area) { mutableListOf() }.add(lift)
+        }
+        val subResorts = if (areas.isEmpty()) {
+            listOf(SubResortData("snowbird", "Snowbird", lifts, null))
+        } else {
+            areas.map { (name, areaLifts) ->
+                SubResortData(
+                    id = name.lowercase().replace(Regex("[^a-z0-9]+"), "-"),
+                    name = name,
+                    lifts = areaLifts.map { it.copy(comment = null) },
+                    weather = null,
+                )
+            }
+        }
+        FetchResult(subResorts, resort.capabilities)
+    }
+
+    private fun fetchSnowbirdLifts(): List<LiftInfo>? {
+        val arr = fetchJsonArray("$API_BASE/api/snowbird/lifts") ?: return null
+        val statusMap = mapOf("open" to "OPERATING", "expected" to "CLOSED", "closed" to "CLOSED")
+        return try {
+            (0 until arr.length()).map { i ->
+                val obj = arr.getJSONObject(i)
+                val rawStatus = obj.optString("status", "closed")
+                val status = statusMap[rawStatus] ?: "CLOSED"
+                val sectorName = obj.optJSONObject("sector")?.optString("name", "Snowbird") ?: "Snowbird"
+
+                // Parse hours like "9:00 AM - 4:00 PM"
+                var start = "08:00"
+                var end = "16:00"
+                val hours = obj.optString("hours", "").trim()
+                val m = Regex("^([\\d:]+\\s*[AP]M)\\s*-\\s*([\\d:]+\\s*[AP]M)$", RegexOption.IGNORE_CASE).find(hours)
+                if (m != null) {
+                    start = to24(m.groupValues[1]) ?: "08:00"
+                    end = to24(m.groupValues[2]) ?: "16:00"
+                }
+
+                LiftInfo(
+                    id = obj.optString("name", "").hashCode(),
+                    name = obj.optString("name", ""),
+                    status = status,
+                    startTime = start,
+                    endTime = end,
+                    comment = sectorName,
+                    vailStatus = when (rawStatus) {
+                        "open" -> "Open"
+                        "expected" -> "Scheduled"
+                        else -> "Closed"
+                    },
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse Snowbird lifts", e)
+            null
+        }
+    }
+
+    private fun to24(timeStr: String): String? {
+        val m = Regex("(\\d+)(?::(\\d+))?\\s*(AM|PM)", RegexOption.IGNORE_CASE).find(timeStr) ?: return null
+        var h = m.groupValues[1].toIntOrNull() ?: return null
+        val min = m.groupValues[2].ifBlank { "00" }
+        val ampm = m.groupValues[3].uppercase()
+        if (ampm == "PM" && h != 12) h += 12
+        if (ampm == "AM" && h == 12) h = 0
+        return "${h.toString().padStart(2, '0')}:$min"
     }
 }

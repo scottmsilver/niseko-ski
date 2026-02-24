@@ -170,7 +170,7 @@ fun SkiApp(
                         }
                     }
                     Tab.MAP -> MapScreen()
-                    Tab.TRAIL -> TrailMapScreen()
+                    Tab.TRAIL -> TrailMapScreen(resortId = uiState.activeResort.id)
                     Tab.SETTINGS -> SettingsScreen(
                         currentTheme = themeOption,
                         currentFontScale = fontScale,
