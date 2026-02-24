@@ -60,6 +60,9 @@ fun MapScreen() {
                 })
             }
         },
+        onRelease = { mapView ->
+            mapView.onDetach()
+        },
     )
 }
 

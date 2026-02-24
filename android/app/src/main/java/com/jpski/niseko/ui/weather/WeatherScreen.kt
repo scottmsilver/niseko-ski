@@ -26,12 +26,88 @@ fun WeatherScreen(subResorts: List<SubResortData>) {
         contentPadding = PaddingValues(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        for (sr in subResorts) {
-            item(key = "wx-${sr.id}") {
+        items(
+            count = subResorts.size,
+            key = { i -> "wx-${subResorts[i].id}" },
+        ) { i ->
+            val sr = subResorts[i]
+            if (!sr.stations.isNullOrEmpty()) {
+                ServerWeatherCard(sr.name, sr.stations)
+            } else {
                 WeatherCard(sr.name, sr.weather)
             }
         }
-        item { Spacer(Modifier.height(80.dp)) }
+        item(key = "wx-spacer") { Spacer(Modifier.height(80.dp)) }
+    }
+}
+
+@Composable
+private fun ServerWeatherCard(name: String, stations: List<WeatherStationDisplay>) {
+    val colors = SkiTheme.colors
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(colors.card)
+            .padding(14.dp),
+    ) {
+        Text(
+            name,
+            color = colors.accent,
+            fontSize = 15.scaledSp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(bottom = 10.dp),
+        )
+
+        if (stations.size == 1) {
+            ServerStationColumn(stations[0], Modifier.fillMaxWidth())
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                for (station in stations) {
+                    ServerStationColumn(station, Modifier.weight(1f))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ServerStationColumn(station: WeatherStationDisplay, modifier: Modifier = Modifier) {
+    val colors = SkiTheme.colors
+
+    Column(modifier = modifier) {
+        Text(
+            station.label.uppercase(),
+            color = colors.accentSecondary,
+            fontSize = 11.scaledSp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 0.5.sp,
+            modifier = Modifier.padding(bottom = 6.dp),
+        )
+
+        Text(
+            station.tempF,
+            color = colors.accentTertiary,
+            fontSize = 26.scaledSp,
+            fontWeight = FontWeight.Bold,
+        )
+
+        Text(
+            "${station.icon} ${station.weather}",
+            color = colors.textDim,
+            fontSize = 13.scaledSp,
+            modifier = Modifier.padding(bottom = 6.dp),
+        )
+
+        WxRow("Snow", station.snowDisplay)
+        WxRow("24h New", station.snow24hDisplay)
+        WxRow("Condition", station.snowState)
+        WxRow("Wind", station.wind)
+        WxRow("Courses", station.courses)
     }
 }
 
@@ -56,18 +132,15 @@ private fun WeatherCard(name: String, stations: List<WeatherStation>?) {
 
         if (stations.isNullOrEmpty()) {
             Text("No data", color = colors.textDim, fontSize = 13.scaledSp)
-            return@Column
-        }
-
-        if (stations.size == 1) {
+        } else if (stations.size == 1) {
             // Single station (e.g., Vail resorts) - show single "Conditions" column
             StationColumn("CONDITIONS", stations[0], Modifier.fillMaxWidth())
         } else {
             // Dual station (e.g., Niseko) - Summit / Base layout
             val summit = stations.find { it.name.contains(SUMMIT_REGEX) }
-                ?: stations.firstOrNull() ?: return@Column
+                ?: stations.first()
             val base = stations.find { it.name.contains(BASE_REGEX) }
-                ?: stations.lastOrNull() ?: return@Column
+                ?: stations.last()
 
             Row(
                 modifier = Modifier.fillMaxWidth(),

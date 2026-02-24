@@ -13,6 +13,14 @@ function getActiveTab() {
   return btn ? btn.dataset.tab : 'lifts';
 }
 
+function parseRoute() {
+  const pathParts = window.location.pathname.replace(/^\//, '').toLowerCase().split('/');
+  const resortSlug = pathParts[0];
+  const tabSlug = pathParts[1] || 'lifts';
+  const validTabs = ['lifts', 'weather', 'trail', 'map', 'settings'];
+  return { resortSlug, tabSlug: validTabs.includes(tabSlug) ? tabSlug : 'lifts' };
+}
+
 function switchResort(id, skipPush) {
   if (!RESORT_ADAPTERS[id]) return;
   activeResortId = id;
@@ -28,6 +36,7 @@ function switchResort(id, skipPush) {
   // Reset map state
   mapInit = false;
   trailMapInit = false;
+  if (mapRef) { mapRef.remove(); }
   mapRef = null;
   // Abort any in-flight trail map listeners and clear the image
   if (window._trailMapAbort) { window._trailMapAbort.abort(); window._trailMapAbort = null; }
@@ -73,6 +82,7 @@ let consecutiveFailures = 0;
 
 // =====================================================
 // Status maps (per-resort API normalization)
+// CANONICAL SOURCE: scraper/shared-constants.json — keep in sync
 // =====================================================
 const SNOWBIRD_STATUS_MAP = {
   'open': 'OPERATING',
@@ -82,6 +92,7 @@ const SNOWBIRD_STATUS_MAP = {
 
 // =====================================================
 // Niseko Adapter
+// CANONICAL SOURCE: scraper/shared-constants.json — keep in sync
 // =====================================================
 const NISEKO_STATUS_MAP = {
   'OPERATION_TEMPORARILY_SUSPENDED': 'ON_HOLD',
@@ -181,16 +192,22 @@ RESORT_ADAPTERS.niseko = {
   },
 
   async fetchData() {
-    const [displayRes, weather] = await Promise.all([
+    const [displayRes, weatherRes] = await Promise.all([
       fetch('/api/display/niseko').then(r => r.ok ? r.json() : null).catch(() => null),
-      this.fetchResortData('weather'),
+      fetch('/api/weather/niseko').then(r => r.ok ? r.json() : null).catch(() => null),
     ]);
+    // Build weather station lookup from server-vended data
+    const wxMap = {};
+    if (weatherRes && weatherRes.subResorts) {
+      weatherRes.subResorts.forEach(w => { wxMap[w.id] = w.stations; });
+    }
     let subResorts;
     if (displayRes && displayRes.subResorts) {
-      // Server-vended display data — merge weather
+      // Server-vended display data — merge weather stations
       subResorts = displayRes.subResorts.map(sr => ({
         ...sr,
-        weather: weather[sr.id] || null,
+        stations: wxMap[sr.id] || null,
+        weather: null,
       }));
     } else {
       // Fallback: fetch raw lift data client-side
@@ -203,8 +220,14 @@ RESORT_ADAPTERS.niseko = {
           scheduled: false, start_time: l.start_time, end_time: l.end_time,
           updateDate: l.updateDate, comment: l.comment || null, waitMinutes: null,
         })) : null,
-        weather: weather[r.id] || null,
+        stations: wxMap[r.id] || null,
+        weather: null,
       }));
+    }
+    // Fallback: if server weather failed, fetch client-side
+    if (!weatherRes) {
+      const weather = await this.fetchResortData('weather');
+      subResorts = subResorts.map(sr => ({ ...sr, weather: weather[sr.id] || null }));
     }
     return { subResorts, capabilities: this.capabilities };
   },
@@ -284,6 +307,7 @@ const VAIL_RESORTS = [
   { id: 'paolipeaks', name: 'Paoli Peaks', region: 'Midwest', timezone: 'America/Indiana/Indianapolis' },
 ];
 
+// CANONICAL SOURCE: scraper/shared-constants.json — keep in sync
 const VAIL_STATUS_MAP = {
   'Open': 'OPERATING',
   'Scheduled': 'CLOSED',
@@ -304,35 +328,13 @@ function createVailAdapter(resort) {
     async fetchData() {
       const [displayRes, weatherRes] = await Promise.all([
         fetch(`/api/display/${resort.id}`).then(r => r.ok ? r.json() : null).catch(() => null),
-        fetch(`/api/vail/${resort.id}/weather`).catch(() => null),
+        fetch(`/api/weather/${resort.id}`).then(r => r.ok ? r.json() : null).catch(() => null),
       ]);
-
-      // Build weather from Vail weather API
-      let weather = null;
-      if (weatherRes && weatherRes.ok) {
-        try {
-          const w = await weatherRes.json();
-          const snowReading = w.BaseSnowReadings?.MidMountain;
-          const newSnow24 = w.NewSnowReadings?.TwentyFourHours;
-          weather = [{
-            name: resort.name,
-            weather: w.SnowConditions || '',
-            temperature: null,
-            snow_accumulation: snowReading ? parseInt(snowReading.Centimeters, 10) : null,
-            snow_accumulation_difference: newSnow24 ? parseInt(newSnow24.Centimeters, 10) : null,
-            snow_state: w.SnowConditions || null,
-            wind_speed: null,
-            cource_state: `${w.Runs?.Open || 0} / ${w.Runs?.Total || 0} runs`,
-          }];
-        } catch (e) {
-          console.warn(`${resort.name} weather parse failed:`, e.message);
-        }
-      }
 
       let subResorts;
       if (displayRes && displayRes.subResorts) {
         // Server-vended display data
-        subResorts = displayRes.subResorts.map(sr => ({ ...sr, weather: null }));
+        subResorts = displayRes.subResorts.map(sr => ({ ...sr, weather: null, stations: null }));
       } else {
         // Fallback: fetch raw terrain and parse client-side
         const terrainRes = await fetch(`/api/vail/${resort.id}/terrain`);
@@ -353,13 +355,35 @@ function createVailAdapter(resort) {
           });
         }
         subResorts = Object.entries(areas).map(([name, lifts]) => ({
-          id: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), name, lifts, weather: null,
+          id: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), name, lifts, weather: null, stations: null,
         }));
       }
 
-      // Attach weather to first sub-resort
-      if (weather && subResorts.length > 0) {
-        subResorts[0].weather = weather;
+      // Attach server-vended weather stations to first sub-resort
+      if (weatherRes && weatherRes.subResorts && weatherRes.subResorts.length > 0 && subResorts.length > 0) {
+        subResorts[0] = { ...subResorts[0], stations: weatherRes.subResorts[0].stations };
+      } else if (subResorts.length > 0) {
+        // Fallback: fetch client-side weather from legacy endpoint
+        try {
+          const wxRes = await fetch(`/api/vail/${resort.id}/weather`);
+          if (wxRes.ok) {
+            const w = await wxRes.json();
+            const snowReading = w.BaseSnowReadings?.MidMountain;
+            const newSnow24 = w.NewSnowReadings?.TwentyFourHours;
+            subResorts[0].weather = [{
+              name: resort.name,
+              weather: w.SnowConditions || '',
+              temperature: null,
+              snow_accumulation: snowReading ? parseInt(snowReading.Centimeters, 10) : null,
+              snow_accumulation_difference: newSnow24 ? parseInt(newSnow24.Centimeters, 10) : null,
+              snow_state: w.SnowConditions || null,
+              wind_speed: null,
+              cource_state: `${w.Runs?.Open || 0} / ${w.Runs?.Total || 0} runs`,
+            }];
+          }
+        } catch (e) {
+          console.warn(`${resort.name} weather fallback failed:`, e.message);
+        }
       }
 
       return { subResorts, capabilities: this.capabilities };
@@ -1284,7 +1308,7 @@ function latestUpdateDate(lifts) {
 }
 
 function cToF(c) { return Math.round(c * 9 / 5 + 32); }
-function cmToIn(cm) { return Math.round(cm / 2.54); }
+function cmToIn(cm) { return (cm / 2.54).toFixed(1); }
 
 // =====================================================
 // Data hash & change detection (normalized structure)
@@ -1338,8 +1362,11 @@ function renderChanges() {
 // =====================================================
 // Weather helpers
 // =====================================================
+// CANONICAL SOURCE: scraper/shared-constants.json — keep in sync
+// With server-vended weather, this is only used as a client-side fallback.
 const JP_EN = {
-  '吹雪': 'Snow Storm', '雪': 'Snow', '曇り': 'Cloudy', '晴れ': 'Clear',
+  '吹雪': 'Snow Storm', '大雪': 'Heavy Snow', '小雪': 'Light Snow',
+  '雪': 'Snow', '曇り': 'Cloudy', '晴れ': 'Clear', '雨': 'Rain',
   '粉雪': 'Powder Snow', '圧雪': 'Packed Powder', '湿雪': 'Wet Snow',
   '全面可能': 'All Courses Open', '一部可能': 'Partial Open', '閉鎖': 'Closed',
   'なし': '\u2014',
@@ -1379,7 +1406,31 @@ function renderWeather(data) {
     return row;
   }
 
-  function createStation(label, s) {
+  // Render a server-vended station (pre-formatted strings)
+  function createServerStation(s) {
+    const station = document.createElement('div');
+    station.className = 'wx-station';
+    const h4 = document.createElement('h4');
+    h4.textContent = s.label;
+    const temp = document.createElement('div');
+    temp.className = 'wx-temp';
+    temp.textContent = s.tempF;
+    const cond = document.createElement('div');
+    cond.className = 'wx-condition';
+    cond.textContent = `${s.icon} ${s.weather}`;
+    station.appendChild(h4);
+    station.appendChild(temp);
+    station.appendChild(cond);
+    station.appendChild(createWxRow('Snow', s.snowDisplay));
+    station.appendChild(createWxRow('24h New', s.snow24hDisplay));
+    station.appendChild(createWxRow('Condition', s.snowState));
+    station.appendChild(createWxRow('Wind', s.wind));
+    station.appendChild(createWxRow('Courses', s.courses));
+    return station;
+  }
+
+  // Render a legacy client-parsed station (needs conversion)
+  function createLegacyStation(label, s) {
     const station = document.createElement('div');
     station.className = 'wx-station';
     const h4 = document.createElement('h4');
@@ -1402,6 +1453,25 @@ function renderWeather(data) {
   }
 
   for (const sr of data.subResorts) {
+    // Server-vended weather stations (preferred)
+    if (sr.stations && sr.stations.length > 0) {
+      const card = document.createElement('div');
+      card.className = 'weather-card';
+      const h3 = document.createElement('h3');
+      h3.textContent = sr.name;
+      card.appendChild(h3);
+
+      const stationsDiv = document.createElement('div');
+      stationsDiv.className = 'wx-stations';
+      for (const s of sr.stations) {
+        stationsDiv.appendChild(createServerStation(s));
+      }
+      card.appendChild(stationsDiv);
+      grid.appendChild(card);
+      continue;
+    }
+
+    // Fallback: legacy client-parsed weather data
     if (!sr.weather) continue;
 
     const card = document.createElement('div');
@@ -1419,15 +1489,15 @@ function renderWeather(data) {
     } else if (wd.length === 1) {
       const stations = document.createElement('div');
       stations.className = 'wx-stations';
-      stations.appendChild(createStation('Conditions', wd[0]));
+      stations.appendChild(createLegacyStation('Conditions', wd[0]));
       card.appendChild(stations);
     } else {
       const top = wd.find(w => /top|peak|summit/i.test(w.name)) || wd[0];
       const base = wd.find(w => /base|foot/i.test(w.name)) || wd[wd.length - 1];
       const stations = document.createElement('div');
       stations.className = 'wx-stations';
-      stations.appendChild(createStation('Summit', top));
-      stations.appendChild(createStation('Base', base));
+      stations.appendChild(createLegacyStation('Summit', top));
+      stations.appendChild(createLegacyStation('Base', base));
       card.appendChild(stations);
     }
     grid.appendChild(card);
@@ -1656,9 +1726,7 @@ async function refresh() {
 // =====================================================
 async function init() {
   // URL routing: parse /{resort}/{tab} from pathname
-  const pathParts = window.location.pathname.replace(/^\//, '').toLowerCase().split('/');
-  const resortSlug = pathParts[0];
-  const tabSlug = pathParts[1] || 'lifts';
+  const { resortSlug, tabSlug } = parseRoute();
   if (resortSlug && RESORT_ADAPTERS[resortSlug]) {
     activeResortId = resortSlug;
     localStorage.setItem('ski-active-resort', resortSlug);
@@ -1671,30 +1739,28 @@ async function init() {
   renderSettings();
 
   // Activate tab from URL (after DOM is set up)
-  const validTabs = ['lifts', 'weather', 'trail', 'map', 'settings'];
-  if (validTabs.includes(tabSlug)) {
-    const tabBtn = document.querySelector(`.tab-btn[data-tab="${tabSlug}"]`);
-    if (tabBtn && tabBtn.style.display !== 'none') tabBtn.click();
-  }
+  const tabBtn = document.querySelector(`.tab-btn[data-tab="${tabSlug}"]`);
+  if (tabBtn && tabBtn.style.display !== 'none') tabBtn.click();
 
   refresh();
 }
 
 window.addEventListener('popstate', () => {
-  const pathParts = window.location.pathname.replace(/^\//, '').toLowerCase().split('/');
-  const resortSlug = pathParts[0];
-  const tabSlug = pathParts[1] || 'lifts';
+  const { resortSlug, tabSlug } = parseRoute();
   if (resortSlug && RESORT_ADAPTERS[resortSlug]) {
     if (resortSlug !== activeResortId) {
       switchResort(resortSlug, true);
     }
     // Activate the tab from the URL
-    const validTabs = ['lifts', 'weather', 'trail', 'map', 'settings'];
-    if (validTabs.includes(tabSlug) && tabSlug !== getActiveTab()) {
+    if (tabSlug !== getActiveTab()) {
       const tabBtn = document.querySelector(`.tab-btn[data-tab="${tabSlug}"]`);
       if (tabBtn && tabBtn.style.display !== 'none') tabBtn.click();
     }
   }
 });
 
-init();
+init().catch(e => {
+  console.error('Init failed:', e);
+  const banner = document.getElementById('error-banner');
+  if (banner) { banner.textContent = 'Failed to initialize. Please refresh.'; banner.classList.add('visible'); }
+});

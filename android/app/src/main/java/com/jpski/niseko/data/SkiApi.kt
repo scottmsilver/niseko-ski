@@ -10,6 +10,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import androidx.annotation.WorkerThread
 import java.util.concurrent.TimeUnit
 
 class SkiApi {
@@ -26,7 +27,8 @@ class SkiApi {
 
     // Japanese to English translations for Niseko weather
     private val jpEn = mapOf(
-        "\u5439\u96EA" to "Snow Storm", "\u96EA" to "Snow", "\u66C7\u308A" to "Cloudy", "\u6674\u308C" to "Clear",
+        "\u5439\u96EA" to "Snow Storm", "\u5927\u96EA" to "Heavy Snow", "\u5C0F\u96EA" to "Light Snow",
+        "\u96EA" to "Snow", "\u66C7\u308A" to "Cloudy", "\u6674\u308C" to "Clear", "\u96E8" to "Rain",
         "\u7C89\u96EA" to "Powder Snow", "\u5727\u96EA" to "Packed Powder", "\u6E7F\u96EA" to "Wet Snow",
         "\u5168\u9762\u53EF\u80FD" to "All Courses Open", "\u4E00\u90E8\u53EF\u80FD" to "Partial Open", "\u9589\u9396" to "Closed",
         "\u306A\u3057" to "\u2014",
@@ -34,6 +36,7 @@ class SkiApi {
 
     private fun translate(s: String?): String = if (s.isNullOrBlank()) "\u2014" else jpEn[s] ?: s
 
+    @WorkerThread
     private fun fetchJson(url: String): JSONObject? {
         val request = Request.Builder()
             .url(url)
@@ -113,23 +116,69 @@ class SkiApi {
         }
     }
 
+    // ── Server-vended weather stations ──
+
+    private fun fetchWeatherStations(resortId: String): Map<String, List<WeatherStationDisplay>>? {
+        val json = fetchJson("$API_BASE/api/weather/$resortId") ?: return null
+        val subResortsArr = json.optJSONArray("subResorts") ?: return null
+        return try {
+            val map = mutableMapOf<String, List<WeatherStationDisplay>>()
+            for (i in 0 until subResortsArr.length()) {
+                val sr = subResortsArr.getJSONObject(i)
+                val id = sr.optString("id", "")
+                val stationsArr = sr.optJSONArray("stations") ?: continue
+                val stations = (0 until stationsArr.length()).map { j ->
+                    val s = stationsArr.getJSONObject(j)
+                    WeatherStationDisplay(
+                        label = s.optString("label", ""),
+                        tempF = s.optString("tempF", "\u2014"),
+                        weather = s.optString("weather", "\u2014"),
+                        icon = s.optString("icon", ""),
+                        snowDisplay = s.optString("snowDisplay", "\u2014"),
+                        snow24hDisplay = s.optString("snow24hDisplay", "\u2014"),
+                        snowState = s.optString("snowState", "\u2014"),
+                        wind = s.optString("wind", "\u2014"),
+                        courses = s.optString("courses", "\u2014"),
+                    )
+                }
+                map[id] = stations
+            }
+            map
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse weather data for $resortId", e)
+            null
+        }
+    }
+
     // ── Niseko ──
 
     private suspend fun fetchNisekoData(resort: ResortConfig): FetchResult = coroutineScope {
         val displayDeferred = async(Dispatchers.IO) { fetchDisplayData("niseko") }
-        val weatherDeferreds = NISEKO_SUB_RESORTS.map { sub ->
-            async(Dispatchers.IO) { sub.id to fetchNisekoWeather(sub.id) }
-        }
+        val weatherDeferred = async(Dispatchers.IO) { fetchWeatherStations("niseko") }
         val displaySubs = displayDeferred.await()
-        val weatherMap = weatherDeferreds.awaitAll().toMap()
+        val wxMap = weatherDeferred.await()
 
         val subResorts = if (displaySubs != null) {
-            // Merge server-vended lifts with client-fetched weather
-            displaySubs.map { sr -> sr.copy(weather = weatherMap[sr.id]) }
+            if (wxMap != null) {
+                // Server-vended lifts + server-vended weather
+                displaySubs.map { sr -> sr.copy(stations = wxMap[sr.id]) }
+            } else {
+                // Server-vended lifts + fallback client-side weather
+                val weatherDeferreds = NISEKO_SUB_RESORTS.map { sub ->
+                    async(Dispatchers.IO) { sub.id to fetchNisekoWeather(sub.id) }
+                }
+                val weatherMap = weatherDeferreds.awaitAll().toMap()
+                displaySubs.map { sr -> sr.copy(weather = weatherMap[sr.id]) }
+            }
         } else {
             // Fallback: fetch everything client-side
+            val weatherDeferreds = NISEKO_SUB_RESORTS.map { sub ->
+                async(Dispatchers.IO) { sub.id to fetchNisekoWeather(sub.id) }
+            }
+            val weatherMap = weatherDeferreds.awaitAll().toMap()
             NISEKO_SUB_RESORTS.map { sub ->
-                SubResortData(sub.id, sub.name, fetchNisekoLifts(sub.id), weatherMap[sub.id])
+                SubResortData(sub.id, sub.name, fetchNisekoLifts(sub.id), weatherMap[sub.id],
+                    stations = wxMap?.get(sub.id))
             }
         }
         FetchResult(subResorts, resort.capabilities)
@@ -184,16 +233,26 @@ class SkiApi {
 
     private suspend fun fetchVailData(resort: ResortConfig): FetchResult = coroutineScope {
         val displayDeferred = async(Dispatchers.IO) { fetchDisplayData(resort.id) }
-        val weatherDeferred = async(Dispatchers.IO) { fetchVailWeather(resort) }
+        val weatherDeferred = async(Dispatchers.IO) { fetchWeatherStations(resort.id) }
         val displaySubs = displayDeferred.await()
-        val weather = weatherDeferred.await()
+        val wxMap = weatherDeferred.await()
 
         val subResorts = displaySubs ?: fetchVailTerrain(resort)
 
         // Attach weather to first sub-resort
-        val result = if (weather != null && subResorts.isNotEmpty()) {
-            val first = subResorts[0].copy(weather = weather)
+        val wxStations = wxMap?.values?.firstOrNull()
+        val result = if (wxStations != null && subResorts.isNotEmpty()) {
+            val first = subResorts[0].copy(stations = wxStations)
             listOf(first) + subResorts.drop(1)
+        } else if (subResorts.isNotEmpty()) {
+            // Fallback: client-side weather parsing
+            val weather = async(Dispatchers.IO) { fetchVailWeather(resort) }.await()
+            if (weather != null) {
+                val first = subResorts[0].copy(weather = weather)
+                listOf(first) + subResorts.drop(1)
+            } else {
+                subResorts
+            }
         } else {
             subResorts
         }
@@ -238,6 +297,7 @@ class SkiApi {
         }
     }
 
+    @WorkerThread
     private fun fetchJsonArray(url: String): JSONArray? {
         val request = Request.Builder()
             .url(url)

@@ -1,8 +1,8 @@
 package com.jpski.niseko.ui.trail
 
 import android.content.Context
-import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.util.Log
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -15,6 +15,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.input.pointer.pointerInput
@@ -25,11 +26,19 @@ import androidx.compose.ui.unit.IntSize
 import com.jpski.niseko.BuildConfig
 import com.jpski.niseko.ui.theme.SkiTheme
 import com.jpski.niseko.ui.theme.scaledSp
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
+
+private val trailMapClient = OkHttpClient.Builder()
+    .connectTimeout(45, TimeUnit.SECONDS)
+    .readTimeout(45, TimeUnit.SECONDS)
+    .build()
 
 @Composable
 fun TrailMapScreen(resortId: String = "niseko") {
@@ -42,57 +51,84 @@ fun TrailMapScreen(resortId: String = "niseko") {
     var isLoading by remember(resortId) { mutableStateOf(true) }
     var errorMsg by remember(resortId) { mutableStateOf<String?>(null) }
     var bitmapPair by remember(resortId) {
-        mutableStateOf<Pair<Bitmap?, androidx.compose.ui.graphics.ImageBitmap?>>(null to null)
+        mutableStateOf<Pair<android.graphics.Bitmap?, ImageBitmap?>>(null to null)
     }
 
-    // Load bitmap: bundled asset for Niseko, server-side for all others
-    LaunchedEffect(resortId) {
+    val screenWidth = context.resources.displayMetrics.widthPixels
+
+    // Load bitmap with proper lifecycle management via DisposableEffect
+    DisposableEffect(resortId) {
         isLoading = true
         errorMsg = null
         bitmapPair = null to null
 
-        try {
-            val androidBitmap = if (resortId == "niseko") {
-                withContext(Dispatchers.IO) {
+        val scope = CoroutineScope(Dispatchers.IO)
+        scope.launch {
+            try {
+                val androidBitmap = if (resortId == "niseko") {
+                    // First pass: get dimensions only
+                    val boundsOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                     context.assets.open("trail-map.jpg").use { stream ->
-                        BitmapFactory.decodeStream(stream)
+                        BitmapFactory.decodeStream(stream, null, boundsOptions)
                     }
-                }
-            } else {
-                withContext(Dispatchers.IO) {
-                    val client = OkHttpClient.Builder()
-                        .connectTimeout(45, TimeUnit.SECONDS)
-                        .readTimeout(45, TimeUnit.SECONDS)
-                        .build()
+                    val sampleSize = maxOf(1, minOf(
+                        boundsOptions.outWidth / screenWidth,
+                        boundsOptions.outHeight / screenWidth
+                    ))
+                    // Second pass: decode with downsampling
+                    context.assets.open("trail-map.jpg").use { stream ->
+                        val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+                        BitmapFactory.decodeStream(stream, null, decodeOptions)
+                    }
+                } else {
                     val url = "${BuildConfig.API_BASE}/api/trailmap/$resortId"
                     val request = Request.Builder().url(url).build()
-                    client.newCall(request).execute().use { response ->
+                    trailMapClient.newCall(request).execute().use { response ->
                         if (!response.isSuccessful) {
                             throw Exception("HTTP ${response.code}")
                         }
                         val bytes = response.body?.bytes() ?: throw Exception("Empty response")
-                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+
+                        // First pass: get dimensions
+                        val boundsOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, boundsOptions)
+
+                        // Calculate sample size based on screen width
+                        val sampleSize = maxOf(1, minOf(
+                            boundsOptions.outWidth / screenWidth,
+                            boundsOptions.outHeight / screenWidth
+                        ))
+
+                        // Second pass: decode with downsampling
+                        val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOptions)
+                            ?: throw Exception("Failed to decode bitmap")
                     }
                 }
+                withContext(Dispatchers.Main) {
+                    if (androidBitmap != null) {
+                        bitmapPair = androidBitmap to androidBitmap.asImageBitmap()
+                    } else {
+                        errorMsg = "Failed to decode trail map"
+                    }
+                    isLoading = false
+                }
+            } catch (e: Exception) {
+                Log.e("TrailMap", "Failed to load trail map", e)
+                withContext(Dispatchers.Main) {
+                    errorMsg = "Trail map not available"
+                    isLoading = false
+                }
             }
-            if (androidBitmap != null) {
-                bitmapPair = androidBitmap to androidBitmap.asImageBitmap()
-            } else {
-                errorMsg = "Failed to decode trail map"
-            }
-        } catch (e: Exception) {
-            errorMsg = "Trail map not available"
         }
-        isLoading = false
-    }
-
-    val (androidBitmap, bitmap) = bitmapPair
-
-    DisposableEffect(resortId) {
         onDispose {
-            androidBitmap?.recycle()
+            scope.cancel()
+            bitmapPair.first?.recycle()
+            bitmapPair = null to null
         }
     }
+
+    val (_, bitmap) = bitmapPair
 
     if (isLoading) {
         Box(Modifier.fillMaxSize().background(colors.bg), contentAlignment = Alignment.Center) {

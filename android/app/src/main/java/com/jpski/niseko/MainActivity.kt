@@ -97,6 +97,7 @@ fun SkiApp(
             when (tab) {
                 Tab.MAP -> capabilities.interactiveMap
                 Tab.TRAIL -> capabilities.trailMap
+                Tab.WEATHER -> capabilities.weather
                 else -> true
             }
         }

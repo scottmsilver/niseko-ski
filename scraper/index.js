@@ -1,10 +1,68 @@
 const puppeteer = require('puppeteer');
 const https = require('https');
 const http = require('http');
-const { execSync } = require('child_process');
+const { execFile } = require('child_process');
+
+function execFileAsync(cmd, args, opts) {
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, opts, (error, stdout, stderr) => {
+      if (error) reject(error);
+      else resolve({ stdout, stderr });
+    });
+  });
+}
 const fs = require('fs');
 const path = require('path');
+const SHARED = require('./shared-constants.json');
+const JP_EN_WEATHER = SHARED.JP_EN_WEATHER;
+const RESORT_TIMEZONES = SHARED.RESORT_TIMEZONES;
+const VAIL_STATUS_MAP = SHARED.VAIL_STATUS_MAP;
+const NISEKO_STATUS_MAP = SHARED.NISEKO_STATUS_MAP;
 const os = require('os');
+
+// ---------------------------------------------------------------------------
+// Response size limits (C2)
+// ---------------------------------------------------------------------------
+const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;       // 5 MB for JSON/HTML
+const MAX_IMAGE_RESPONSE_BYTES = 50 * 1024 * 1024; // 50 MB for images
+
+// ---------------------------------------------------------------------------
+// SSRF prevention: validate redirect destinations (C1)
+// ---------------------------------------------------------------------------
+function isPrivateHostname(hostname) {
+  // IPv6 loopback
+  if (hostname === '::1' || hostname === '[::1]') return true;
+  // IPv6 unique-local (fc00::/7)
+  if (/^\[?f[cd]/i.test(hostname)) return true;
+  // IPv4 private/reserved ranges
+  const parts = hostname.replace(/^\[|\]$/g, '').split('.');
+  if (parts.length === 4 && parts.every(p => /^\d+$/.test(p))) {
+    const a = parseInt(parts[0], 10);
+    const b = parseInt(parts[1], 10);
+    if (a === 127) return true;                         // 127.0.0.0/8
+    if (a === 10) return true;                          // 10.0.0.0/8
+    if (a === 172 && b >= 16 && b <= 31) return true;   // 172.16.0.0/12
+    if (a === 192 && b === 168) return true;            // 192.168.0.0/16
+    if (a === 169 && b === 254) return true;            // 169.254.0.0/16
+    if (a === 0) return true;                            // 0.0.0.0/8
+  }
+  // localhost alias
+  if (hostname === 'localhost') return true;
+  return false;
+}
+
+function isAllowedRedirect(locationUrl, originalUrl) {
+  try {
+    const resolved = new URL(locationUrl, originalUrl);
+    // Reject protocol downgrade (HTTPS -> HTTP)
+    if (new URL(originalUrl).protocol === 'https:' && resolved.protocol !== 'https:') return false;
+    // Reject private/internal IPs
+    if (isPrivateHostname(resolved.hostname)) return false;
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Resort terrain-page URLs (all Vail Resorts properties)
@@ -62,6 +120,8 @@ const STALE_DROP_MS = 10 * 60_000;    // 10 minutes — drop from cache if unreq
 const CLEANUP_INTERVAL_MS = 60_000;   // run cleanup every 60 s
 const TRAILMAP_CACHE_TTL_MS = 24 * 60 * 60_000;  // 24 hours
 const TRAILMAP_STALE_DROP_MS = 5 * 60_000;        // 5 min idle → drop (images are large)
+const TRAILMAP_MAX_ENTRIES = 10;                   // cap in-memory trail map images
+const WEATHER_CACHE_TTL_MS = 5 * 60_000;          // 5 minutes for weather
 const PORT = 3000;
 
 // ---------------------------------------------------------------------------
@@ -74,6 +134,9 @@ const cache = {};
 // Trail map image cache: { [slug]: { data: Buffer, contentType, fetchedAt, lastRequestedAt, fetching } }
 const trailMapCache = {};
 
+// Weather cache: { [slug]: { data, fetchedAt, lastRequestedAt, fetching } }
+const weatherCache = {};
+
 // Concurrency limiter for Puppeteer pages
 const MAX_CONCURRENT_SCRAPES = 3;
 let activeScrapes = 0;
@@ -81,6 +144,7 @@ let activeScrapes = 0;
 // Shared browser instance (reused across scrapes)
 let browser = null;
 let browserLaunching = false;
+let browserLaunchPromise = null;
 let browserLaunchCooldown = 0;
 
 function log(msg) {
@@ -95,21 +159,19 @@ async function ensureBrowser() {
   if (Date.now() < browserLaunchCooldown) throw new Error('Browser launch on cooldown');
 
   // If another call is already launching, wait for it.
-  if (browserLaunching) {
-    const deadline = Date.now() + 30_000;
-    while (browserLaunching && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    if (browserLaunching) throw new Error('Browser launch timed out (30s)');
+  if (browserLaunching && browserLaunchPromise) {
+    await browserLaunchPromise;
     if (browser && browser.isConnected()) return browser;
     throw new Error('Browser launch failed (waited)');
   }
 
   browserLaunching = true;
+  let resolveLaunch;
+  browserLaunchPromise = new Promise(r => { resolveLaunch = r; });
   try {
     log('Launching browser');
     browser = await puppeteer.launch({
-      headless: 'new',
+      headless: true,
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
     });
     browser.on('disconnected', () => {
@@ -122,6 +184,8 @@ async function ensureBrowser() {
     throw e;
   } finally {
     browserLaunching = false;
+    resolveLaunch();
+    browserLaunchPromise = null;
   }
 }
 
@@ -187,21 +251,19 @@ async function getResortData(slug) {
   }
 
   // If a scrape is already in flight for this resort, wait for it.
-  if (entry && entry.scraping) {
-    // Wait up to 45 s for the in-flight scrape
-    const deadline = now + 45_000;
-    while (cache[slug] && cache[slug].scraping && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 200));
-    }
+  if (entry && entry.scraping && entry.promise) {
+    await entry.promise;
     const updated = cache[slug];
     return updated && updated.data ? updated.data : null;
   }
 
   // Start a new scrape
   if (!cache[slug]) {
-    cache[slug] = { data: null, fetchedAt: 0, lastRequestedAt: now, scraping: false };
+    cache[slug] = { data: null, fetchedAt: 0, lastRequestedAt: now, scraping: false, promise: null };
   }
   cache[slug].scraping = true;
+  let resolve;
+  cache[slug].promise = new Promise(r => { resolve = r; });
 
   try {
     const data = await scrapeResort(slug);
@@ -212,6 +274,8 @@ async function getResortData(slug) {
     return cache[slug].data; // may still be previous stale data if scrape returned null
   } finally {
     cache[slug].scraping = false;
+    resolve();
+    cache[slug].promise = null;
   }
 }
 
@@ -235,6 +299,24 @@ setInterval(() => {
       delete trailMapCache[slug];
     }
   }
+  // Weather cache cleanup
+  for (const slug of Object.keys(weatherCache)) {
+    if (weatherCache[slug].fetching) continue;
+    if (now - weatherCache[slug].lastRequestedAt > STALE_DROP_MS) {
+      log(`[weather:${slug}] Dropping from cache (idle ${Math.round((now - weatherCache[slug].lastRequestedAt) / 1000)}s)`);
+      delete weatherCache[slug];
+    }
+  }
+  // Alta cache cleanup (M3)
+  if (altaCache.data && !altaCache.fetching && (now - altaCache.fetchedAt) > CACHE_TTL_MS) {
+    log('[alta] Dropping from cache (stale)');
+    altaCache = { data: null, fetchedAt: 0, fetching: false };
+  }
+  // Snowbird cache cleanup
+  if (snowbirdCache.data && !snowbirdCache.fetching && (now - snowbirdCache.fetchedAt) > SNOWBIRD_CACHE_TTL_MS) {
+    log('[snowbird] Dropping from cache (stale)');
+    snowbirdCache = { data: null, fetchedAt: 0, fetching: false };
+  }
 }, CLEANUP_INTERVAL_MS);
 
 // ---------------------------------------------------------------------------
@@ -251,7 +333,12 @@ function fetchAltaHTML() {
         return reject(new Error(`Alta HTTP ${res.statusCode}`));
       }
       const chunks = [];
-      res.on('data', (chunk) => chunks.push(chunk));
+      let totalBytes = 0;
+      res.on('data', (chunk) => {
+        totalBytes += chunk.length;
+        if (totalBytes > MAX_RESPONSE_BYTES) { res.destroy(new Error('Response too large')); return; }
+        chunks.push(chunk);
+      });
       res.on('end', () => resolve(Buffer.concat(chunks).toString()));
     });
     req.on('error', reject);
@@ -266,15 +353,14 @@ async function getAltaData() {
   }
 
   // If another fetch is in flight, wait for it
-  if (altaCache.fetching) {
-    const deadline = Date.now() + 20_000;
-    while (altaCache.fetching && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 200));
-    }
+  if (altaCache.fetching && altaCache.promise) {
+    await altaCache.promise;
     if (altaCache.data) return altaCache.data;
   }
 
   altaCache.fetching = true;
+  let resolveAlta;
+  altaCache.promise = new Promise(r => { resolveAlta = r; });
   try {
     const html = await fetchAltaHTML();
     const match = html.match(/window\.Alta\s*=\s*(\{.*?\});\s*<\/script>/);
@@ -288,37 +374,78 @@ async function getAltaData() {
     return parsed;
   } finally {
     altaCache.fetching = false;
+    resolveAlta();
+    altaCache.promise = null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Snowbird: lightweight API fetch with caching (M2)
+// ---------------------------------------------------------------------------
+const SNOWBIRD_CACHE_TTL_MS = 120000;
+let snowbirdCache = { data: null, fetchedAt: 0, fetching: false };
+
+function fetchSnowbirdLifts() {
+  return new Promise((resolve, reject) => {
+    const req = https.get('https://api.snowbird.com/api/v1/dor/drupal/lifts', { headers: { Accept: 'application/json' } }, (r) => {
+      if (r.statusCode !== 200) {
+        r.resume();
+        return reject(new Error(`Snowbird HTTP ${r.statusCode}`));
+      }
+      const chunks = [];
+      let totalBytes = 0;
+      r.on('data', c => {
+        totalBytes += c.length;
+        if (totalBytes > MAX_RESPONSE_BYTES) { r.destroy(new Error('Response too large')); return; }
+        chunks.push(c);
+      });
+      r.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString())); } catch (e) { reject(e); } });
+    });
+    req.on('error', reject);
+    req.setTimeout(15000, () => { req.destroy(new Error('Timeout')); });
+  });
+}
+
+async function getSnowbirdData() {
+  const now = Date.now();
+  if (snowbirdCache.data && (now - snowbirdCache.fetchedAt) < SNOWBIRD_CACHE_TTL_MS) {
+    return snowbirdCache.data;
+  }
+
+  // If another fetch is in flight, wait for it
+  if (snowbirdCache.fetching && snowbirdCache.promise) {
+    await snowbirdCache.promise;
+    if (snowbirdCache.data) return snowbirdCache.data;
+  }
+
+  snowbirdCache.fetching = true;
+  let resolveSnowbird;
+  snowbirdCache.promise = new Promise(r => { resolveSnowbird = r; });
+  try {
+    const data = await fetchSnowbirdLifts();
+    snowbirdCache.data = data;
+    snowbirdCache.fetchedAt = Date.now();
+    log(`[snowbird] Fetched ${(data || []).length} lifts`);
+    return data;
+  } finally {
+    snowbirdCache.fetching = false;
+    resolveSnowbird();
+    snowbirdCache.promise = null;
   }
 }
 
 // ---------------------------------------------------------------------------
 // Generic HTTPS fetch helpers
 // ---------------------------------------------------------------------------
-function fetchHTML(url) {
+function fetchImageBuffer(url, _redirects = 0) {
   return new Promise((resolve, reject) => {
+    if (_redirects > 5) return reject(new Error('Too many redirects'));
     const req = https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        // Follow redirect
-        return fetchHTML(res.headers.location).then(resolve, reject);
-      }
-      if (res.statusCode !== 200) {
         res.resume();
-        return reject(new Error(`HTTP ${res.statusCode} for ${url}`));
-      }
-      const chunks = [];
-      res.on('data', (chunk) => chunks.push(chunk));
-      res.on('end', () => resolve(Buffer.concat(chunks).toString()));
-    });
-    req.on('error', reject);
-    req.setTimeout(15000, () => { req.destroy(); reject(new Error('Request timeout')); });
-  });
-}
-
-function fetchImageBuffer(url) {
-  return new Promise((resolve, reject) => {
-    const req = https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        return fetchImageBuffer(res.headers.location).then(resolve, reject);
+        if (!isAllowedRedirect(res.headers.location, url)) return reject(new Error('Blocked redirect'));
+        const resolved = new URL(res.headers.location, url).href;
+        return fetchImageBuffer(resolved, _redirects + 1).then(resolve, reject);
       }
       if (res.statusCode !== 200) {
         res.resume();
@@ -326,7 +453,12 @@ function fetchImageBuffer(url) {
       }
       const contentType = (res.headers['content-type'] || 'image/jpeg').split(';')[0].trim();
       const chunks = [];
-      res.on('data', (chunk) => chunks.push(chunk));
+      let totalBytes = 0;
+      res.on('data', (chunk) => {
+        totalBytes += chunk.length;
+        if (totalBytes > MAX_IMAGE_RESPONSE_BYTES) { res.destroy(new Error('Response too large')); return; }
+        chunks.push(chunk);
+      });
       res.on('end', () => resolve({ data: Buffer.concat(chunks), contentType }));
     });
     req.on('error', reject);
@@ -476,18 +608,27 @@ const SNOWBIRD_TRAILMAP_URL = 'https://cms.snowbird.com/sites/default/files/2025
 
 // Fetch a URL as a raw buffer without browser-like User-Agent.
 // Vail's Akamai CDN serves WAF challenge pages to browser UAs on PDF assets.
-function fetchRawBuffer(url) {
+function fetchRawBuffer(url, _redirects = 0) {
   return new Promise((resolve, reject) => {
+    if (_redirects > 5) return reject(new Error('Too many redirects'));
     const req = https.get(url, { headers: { 'User-Agent': 'curl/8.0' } }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        return fetchRawBuffer(res.headers.location).then(resolve, reject);
+        res.resume();
+        if (!isAllowedRedirect(res.headers.location, url)) return reject(new Error('Blocked redirect'));
+        const resolved = new URL(res.headers.location, url).href;
+        return fetchRawBuffer(resolved, _redirects + 1).then(resolve, reject);
       }
       if (res.statusCode !== 200) {
         res.resume();
         return reject(new Error(`HTTP ${res.statusCode} for ${url}`));
       }
       const chunks = [];
-      res.on('data', (chunk) => chunks.push(chunk));
+      let totalBytes = 0;
+      res.on('data', (chunk) => {
+        totalBytes += chunk.length;
+        if (totalBytes > MAX_IMAGE_RESPONSE_BYTES) { res.destroy(new Error('Response too large')); return; }
+        chunks.push(chunk);
+      });
       res.on('end', () => resolve(Buffer.concat(chunks)));
     });
     req.on('error', reject);
@@ -508,7 +649,7 @@ async function renderPdfAsImage(pdfUrl, pageNum) {
 
   try {
     fs.writeFileSync(pdfPath, pdfBuffer);
-    execSync(`pdftoppm -jpeg -r 300 -f ${pg} -l ${pg} "${pdfPath}" "${outPrefix}"`, { timeout: 30_000 });
+    await execFileAsync('pdftoppm', ['-jpeg', '-r', '300', '-f', String(pg), '-l', String(pg), pdfPath, outPrefix], { timeout: 30_000 });
 
     // pdftoppm outputs {prefix}-{pageNum}.jpg
     const outPath = outPrefix + `-${pg}.jpg`;
@@ -549,20 +690,19 @@ async function getTrailMapImage(slug) {
   }
 
   // If a fetch is already in flight, wait for it
-  if (entry && entry.fetching) {
-    const deadline = now + 45_000;
-    while (trailMapCache[slug] && trailMapCache[slug].fetching && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 200));
-    }
+  if (entry && entry.fetching && entry.promise) {
+    await entry.promise;
     const updated = trailMapCache[slug];
     return updated && updated.data ? { data: updated.data, contentType: updated.contentType } : null;
   }
 
   // Start a new fetch
   if (!trailMapCache[slug]) {
-    trailMapCache[slug] = { data: null, contentType: null, fetchedAt: 0, lastRequestedAt: now, fetching: false };
+    trailMapCache[slug] = { data: null, contentType: null, fetchedAt: 0, lastRequestedAt: now, fetching: false, promise: null };
   }
   trailMapCache[slug].fetching = true;
+  let resolveTM;
+  trailMapCache[slug].promise = new Promise(r => { resolveTM = r; });
 
   try {
     const imageUrl = await discoverTrailMapUrl(slug);
@@ -584,7 +724,7 @@ async function getTrailMapImage(slug) {
       const tmpOut = path.join(os.tmpdir(), `crop-out-${Date.now()}.jpg`);
       try {
         fs.writeFileSync(tmpIn, data);
-        execSync(`convert "${tmpIn}" -gravity North -crop 100%x${cropPct}%+0+0 +repage "${tmpOut}"`, { timeout: 15_000 });
+        await execFileAsync('convert', [tmpIn, '-gravity', 'North', '-crop', `100%x${cropPct}%+0+0`, '+repage', tmpOut], { timeout: 15_000 });
         data = fs.readFileSync(tmpOut);
         contentType = 'image/jpeg';
         log(`[trailmap:${slug}] Cropped to top ${cropPct}%: ${(data.length / 1024 / 1024).toFixed(1)}MB`);
@@ -594,6 +734,16 @@ async function getTrailMapImage(slug) {
       }
     }
 
+    // Evict oldest entry if cache is at capacity
+    const keys = Object.keys(trailMapCache);
+    if (keys.length > TRAILMAP_MAX_ENTRIES) {
+      let oldest = null, oldestAt = Infinity;
+      for (const k of keys) {
+        if (k === slug || trailMapCache[k].fetching) continue;
+        if (trailMapCache[k].lastRequestedAt < oldestAt) { oldest = k; oldestAt = trailMapCache[k].lastRequestedAt; }
+      }
+      if (oldest) { log(`[trailmap:${oldest}] Evicted (cache full)`); delete trailMapCache[oldest]; }
+    }
     trailMapCache[slug].data = data;
     trailMapCache[slug].contentType = contentType;
     trailMapCache[slug].fetchedAt = Date.now();
@@ -604,6 +754,8 @@ async function getTrailMapImage(slug) {
     return trailMapCache[slug].data ? { data: trailMapCache[slug].data, contentType: trailMapCache[slug].contentType } : null;
   } finally {
     trailMapCache[slug].fetching = false;
+    resolveTM();
+    trailMapCache[slug].promise = null;
   }
 }
 
@@ -612,30 +764,9 @@ async function getTrailMapImage(slug) {
 // ---------------------------------------------------------------------------
 const { augmentDisplay } = require('./display');
 
-// Timezone per resort (must match client-side adapter definitions)
-const RESORT_TIMEZONES = {
-  // Vail resorts
-  vail: 'America/Denver', beavercreek: 'America/Denver', breckenridge: 'America/Denver',
-  keystone: 'America/Denver', crestedbutte: 'America/Denver', parkcity: 'America/Denver',
-  heavenly: 'America/Los_Angeles', northstar: 'America/Los_Angeles', kirkwood: 'America/Los_Angeles',
-  stevenspass: 'America/Los_Angeles', whistlerblackcomb: 'America/Vancouver',
-  stowe: 'America/New_York', okemo: 'America/New_York', mtsnow: 'America/New_York',
-  mountsunapee: 'America/New_York', attitashmountain: 'America/New_York',
-  wildcatmountain: 'America/New_York', crotchedmountain: 'America/New_York',
-  hunter: 'America/New_York', sevensprings: 'America/New_York',
-  libertymountain: 'America/New_York', roundtopmountain: 'America/New_York',
-  whitetail: 'America/New_York', jackfrostbigboulder: 'America/New_York',
-  hiddenvalleypa: 'America/New_York', laurelmountain: 'America/New_York',
-  aftonalps: 'America/Chicago', mtbrighton: 'America/Detroit',
-  wilmotmountain: 'America/Chicago', alpinevalley: 'America/New_York',
-  bmbw: 'America/New_York', madrivermountain: 'America/New_York',
-  hiddenvalley: 'America/Chicago', snowcreek: 'America/Chicago',
-  paolipeaks: 'America/Indiana/Indianapolis',
-  // Ikon
-  alta: 'America/Denver', snowbird: 'America/Denver',
-};
+// RESORT_TIMEZONES — loaded from shared-constants.json (canonical source)
 
-const VAIL_STATUS_MAP = { Open: 'OPERATING', Scheduled: 'CLOSED', OnHold: 'ON_HOLD', Closed: 'CLOSED' };
+// VAIL_STATUS_MAP — loaded from shared-constants.json (canonical source)
 
 // Normalize raw Vail TerrainStatusFeed into the shared format
 function normalizeVailData(slug, raw) {
@@ -725,16 +856,27 @@ const NISEKO_SUB_RESORTS = [
   { id: '393', name: 'Annupuri' },
   { id: '394', name: 'Niseko Village' },
 ];
-const NISEKO_STATUS_MAP = { OPERATION_TEMPORARILY_SUSPENDED: 'ON_HOLD', SUSPENDED_CLOSED: 'CLOSED' };
+// NISEKO_STATUS_MAP — loaded from shared-constants.json (canonical source)
 
 function fetchNisekoLifts(skiareaId) {
   return new Promise((resolve, reject) => {
     const url = `https://web-api.yukiyama.biz/web-api/latest-facility/backward?facilityType=lift&lang=en&skiareaId=${skiareaId}`;
-    https.get(url, { headers: { Accept: 'application/json', Referer: 'https://www.niseko.ne.jp/' } }, (r) => {
+    const req = https.get(url, { headers: { Accept: 'application/json', Referer: 'https://www.niseko.ne.jp/' } }, (r) => {
+      if (r.statusCode !== 200) {
+        r.resume();
+        return reject(new Error(`Niseko lifts HTTP ${r.statusCode}`));
+      }
       const chunks = [];
-      r.on('data', c => chunks.push(c));
+      let totalBytes = 0;
+      r.on('data', c => {
+        totalBytes += c.length;
+        if (totalBytes > MAX_RESPONSE_BYTES) { r.destroy(new Error('Response too large')); return; }
+        chunks.push(c);
+      });
       r.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString())); } catch (e) { reject(e); } });
-    }).on('error', reject);
+    });
+    req.on('error', reject);
+    req.setTimeout(15000, () => { req.destroy(new Error('Timeout')); });
   });
 }
 
@@ -761,16 +903,204 @@ async function normalizeNisekoData() {
 }
 
 // ---------------------------------------------------------------------------
+// Weather normalization — server-vended weather stations
+// ---------------------------------------------------------------------------
+
+// JP_EN_WEATHER — loaded from shared-constants.json (canonical source)
+
+function trJP(s) { return s ? (JP_EN_WEATHER[s] || s) : '\u2014'; }
+
+function wxIcon(weather) {
+  const w = (weather || '').toLowerCase();
+  if (w.includes('storm') || w.includes('blizzard')) return '\u{1F32C}\u{FE0F}';
+  if (w.includes('snow')) return '\u{2744}\u{FE0F}';
+  if (w.includes('rain')) return '\u{1F327}\u{FE0F}';
+  if (w.includes('cloud') || w.includes('overcast')) return '\u{2601}\u{FE0F}';
+  if (w.includes('sun') || w.includes('clear') || w.includes('fine')) return '\u{2600}\u{FE0F}';
+  if (w.includes('fog') || w.includes('mist')) return '\u{1F32B}\u{FE0F}';
+  return '\u{1F324}\u{FE0F}';
+}
+
+function cToF(c) { return Math.round(c * 9 / 5 + 32); }
+function cmToIn(cm) { return (cm / 2.54).toFixed(1); }
+
+function formatSnow(cm) {
+  if (cm == null || isNaN(cm)) return '\u2014';
+  return `${cmToIn(cm)}" (${Math.round(cm)}cm)`;
+}
+
+function makeStation(label, s) {
+  const weather = trJP(s.weather);
+  return {
+    label,
+    tempF: s.temperature != null ? `${cToF(s.temperature)}\u00B0F` : '\u2014',
+    tempC: s.temperature != null ? `${Math.round(s.temperature)}\u00B0C` : '\u2014',
+    weather,
+    icon: wxIcon(weather),
+    snowDisplay: formatSnow(s.snow_accumulation),
+    snow24hDisplay: formatSnow(s.snow_accumulation_difference),
+    snowState: trJP(s.snow_state),
+    wind: s.wind_speed || '\u2014',
+    courses: trJP(s.cource_state),
+  };
+}
+
+function fetchNisekoWeatherRaw(skiareaId) {
+  return new Promise((resolve, reject) => {
+    const url = `https://web-api.yukiyama.biz/web-api/latest-weather/backward?lang=en&skiareaId=${skiareaId}`;
+    const req = https.get(url, { headers: { Accept: 'application/json', Referer: 'https://www.niseko.ne.jp/' } }, (r) => {
+      if (r.statusCode !== 200) {
+        r.resume();
+        return reject(new Error(`Niseko weather HTTP ${r.statusCode}`));
+      }
+      const chunks = [];
+      let totalBytes = 0;
+      r.on('data', c => {
+        totalBytes += c.length;
+        if (totalBytes > MAX_RESPONSE_BYTES) { r.destroy(new Error('Response too large')); return; }
+        chunks.push(c);
+      });
+      r.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString())); } catch (e) { reject(e); } });
+    });
+    req.on('error', reject);
+    req.setTimeout(15000, () => { req.destroy(new Error('Timeout')); });
+  });
+}
+
+async function normalizeNisekoWeather() {
+  return Promise.all(NISEKO_SUB_RESORTS.map(async (r) => {
+    try {
+      const data = await fetchNisekoWeatherRaw(r.id);
+      const raw = data.results || [];
+      if (raw.length === 0) return { id: r.id, name: r.name, stations: [] };
+
+      if (raw.length === 1) {
+        return { id: r.id, name: r.name, stations: [makeStation('Conditions', raw[0])] };
+      }
+
+      const summit = raw.find(w => /top|peak|summit/i.test(w.name)) || raw[0];
+      const base = raw.find(w => /base|foot/i.test(w.name)) || raw[raw.length - 1];
+      return { id: r.id, name: r.name, stations: [makeStation('Summit', summit), makeStation('Base', base)] };
+    } catch (e) {
+      log(`[weather:niseko:${r.id}] Fetch failed: ${e.message}`);
+      return { id: r.id, name: r.name, stations: [] };
+    }
+  }));
+}
+
+function fetchVailWeatherRaw(slug) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(`https://cache.snow.com/api/WeatherApi/GetWeather/${slug}`, { headers: { Accept: 'application/json' } }, (r) => {
+      if (r.statusCode !== 200) {
+        r.resume();
+        return reject(new Error(`Vail weather HTTP ${r.statusCode}`));
+      }
+      const chunks = [];
+      let totalBytes = 0;
+      r.on('data', c => {
+        totalBytes += c.length;
+        if (totalBytes > MAX_RESPONSE_BYTES) { r.destroy(new Error('Response too large')); return; }
+        chunks.push(c);
+      });
+      r.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString())); } catch (e) { reject(e); } });
+    });
+    req.on('error', reject);
+    req.setTimeout(15000, () => { req.destroy(new Error('Timeout')); });
+  });
+}
+
+function normalizeVailWeather(slug, raw) {
+  const baseSnow = raw.BaseSnowReadings;
+  const midMountain = baseSnow && baseSnow.MidMountain;
+  const newSnow = raw.NewSnowReadings;
+  const newSnow24 = newSnow && newSnow.TwentyFourHours;
+  const runs = raw.Runs;
+  const snowConditions = raw.SnowConditions || '';
+
+  const snowCm = midMountain ? parseInt(midMountain.Centimeters, 10) : null;
+  const new24Cm = newSnow24 ? parseInt(newSnow24.Centimeters, 10) : null;
+  const runsOpen = runs ? (runs.Open || 0) : 0;
+  const runsTotal = runs ? (runs.Total || 0) : 0;
+
+  const station = {
+    label: 'Conditions',
+    tempF: '\u2014',
+    tempC: '\u2014',
+    weather: snowConditions || '\u2014',
+    icon: wxIcon(snowConditions),
+    snowDisplay: formatSnow(isNaN(snowCm) ? null : snowCm),
+    snow24hDisplay: formatSnow(isNaN(new24Cm) ? null : new24Cm),
+    snowState: snowConditions || '\u2014',
+    wind: '\u2014',
+    courses: `${runsOpen} / ${runsTotal} runs`,
+  };
+
+  return [{ id: slug, name: slug, stations: [station] }];
+}
+
+async function getWeatherData(slug) {
+  if (slug !== 'niseko' && slug !== 'alta' && slug !== 'snowbird' && !TERRAIN_URLS[slug]) {
+    return null;
+  }
+
+  const entry = weatherCache[slug];
+  const now = Date.now();
+  if (entry) entry.lastRequestedAt = now;
+
+  if (entry && entry.data && (now - entry.fetchedAt) < WEATHER_CACHE_TTL_MS) {
+    return entry.data;
+  }
+
+  if (entry && entry.fetching && entry.promise) {
+    await entry.promise;
+    const updated = weatherCache[slug];
+    return updated && updated.data ? updated.data : { subResorts: [] };
+  }
+
+  if (!weatherCache[slug]) {
+    weatherCache[slug] = { data: null, fetchedAt: 0, lastRequestedAt: now, fetching: false, promise: null };
+  }
+  weatherCache[slug].fetching = true;
+  let resolveWx;
+  weatherCache[slug].promise = new Promise(r => { resolveWx = r; });
+
+  try {
+    let subResorts;
+    if (slug === 'niseko') {
+      subResorts = await normalizeNisekoWeather();
+    } else if (slug === 'alta' || slug === 'snowbird') {
+      subResorts = [];
+    } else if (TERRAIN_URLS[slug]) {
+      const raw = await fetchVailWeatherRaw(slug);
+      subResorts = normalizeVailWeather(slug, raw);
+    } else {
+      return null;
+    }
+    const result = { subResorts };
+    weatherCache[slug].data = result;
+    weatherCache[slug].fetchedAt = Date.now();
+    log(`[weather:${slug}] Cached weather for ${subResorts.length} sub-resort(s)`);
+    return result;
+  } catch (e) {
+    log(`[weather:${slug}] Fetch failed: ${e.message}`);
+    return weatherCache[slug].data || { subResorts: [] };
+  } finally {
+    weatherCache[slug].fetching = false;
+    resolveWx();
+    weatherCache[slug].promise = null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // HTTP server
 // ---------------------------------------------------------------------------
 const server = http.createServer(async (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Content-Type', 'application/json');
 
-  const path = req.url.replace(/\/$/, '') || '/';
+  const urlPath = req.url.replace(/\/$/, '') || '/';
 
   // --- /health ---
-  if (path === '/health') {
+  if (urlPath === '/health') {
     const status = {};
     for (const slug of Object.keys(cache)) {
       status[slug] = {
@@ -783,13 +1113,13 @@ const server = http.createServer(async (req, res) => {
   }
 
   // --- /resorts ---
-  if (path === '/resorts') {
+  if (urlPath === '/resorts') {
     res.end(JSON.stringify(Object.keys(TERRAIN_URLS)));
     return;
   }
 
   // --- /display/{slug} --- normalized lift data with display instructions
-  const displayMatch = path.match(/^\/display\/([a-z]+)$/);
+  const displayMatch = urlPath.match(/^\/display\/([a-z]+)$/);
   if (displayMatch) {
     const dSlug = displayMatch[1];
     try {
@@ -800,13 +1130,7 @@ const server = http.createServer(async (req, res) => {
         const data = await getAltaData();
         subResorts = normalizeAltaData(data);
       } else if (dSlug === 'snowbird') {
-        const snowbirdRes = await new Promise((resolve, reject) => {
-          https.get('https://api.snowbird.com/api/v1/dor/drupal/lifts', { headers: { Accept: 'application/json' } }, (r) => {
-            const chunks = [];
-            r.on('data', c => chunks.push(c));
-            r.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString())); } catch (e) { reject(e); } });
-          }).on('error', reject);
-        });
+        const snowbirdRes = await getSnowbirdData();
         subResorts = normalizeSnowbirdData(snowbirdRes);
       } else if (TERRAIN_URLS[dSlug]) {
         const data = await getResortData(dSlug);
@@ -825,26 +1149,46 @@ const server = http.createServer(async (req, res) => {
     } catch (e) {
       log(`[display:${dSlug}] Error: ${e.message}`);
       res.statusCode = 500;
-      res.end(JSON.stringify({ error: e.message }));
+      res.end(JSON.stringify({ error: 'Internal error' }));
+    }
+    return;
+  }
+
+  // --- /weather/{slug} --- normalized weather data with display strings
+  const weatherMatch = urlPath.match(/^\/weather\/([a-z]+)$/);
+  if (weatherMatch) {
+    const wSlug = weatherMatch[1];
+    try {
+      const result = await getWeatherData(wSlug);
+      if (!result) {
+        res.statusCode = 404;
+        res.end(JSON.stringify({ error: `Unknown resort: ${wSlug}` }));
+        return;
+      }
+      res.end(JSON.stringify(result));
+    } catch (e) {
+      log(`[weather:${wSlug}] Error: ${e.message}`);
+      res.statusCode = 500;
+      res.end(JSON.stringify({ error: 'Internal error' }));
     }
     return;
   }
 
   // --- /alta ---
-  if (path === '/alta') {
+  if (urlPath === '/alta') {
     try {
       const data = await getAltaData();
       res.end(JSON.stringify(data));
     } catch (e) {
       log(`[alta] Request error: ${e.message}`);
       res.statusCode = 503;
-      res.end(JSON.stringify({ error: e.message }));
+      res.end(JSON.stringify({ error: 'Service temporarily unavailable' }));
     }
     return;
   }
 
   // --- /trailmap/{slug} ---
-  const trailmapMatch = path.match(/^\/trailmap\/([a-z]+)$/);
+  const trailmapMatch = urlPath.match(/^\/trailmap\/([a-z]+)$/);
   if (trailmapMatch) {
     const tmSlug = trailmapMatch[1];
     try {
@@ -868,7 +1212,12 @@ const server = http.createServer(async (req, res) => {
   }
 
   // --- /{slug} ---
-  const slug = path.slice(1); // strip leading /
+  const slug = urlPath.slice(1); // strip leading /
+  if (!/^[a-z]+$/.test(slug)) {
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: 'Not found' }));
+    return;
+  }
   if (!TERRAIN_URLS[slug]) {
     res.statusCode = 404;
     res.end(JSON.stringify({ error: `Unknown resort: ${slug}` }));

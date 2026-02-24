@@ -1,0 +1,31 @@
+name: CI
+'on':
+  push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+    - name: Install scraper dependencies
+      run: cd scraper && npm ci
+    - name: Run unit tests
+      run: cd scraper && npm test
+    - name: Security audit
+      run: cd scraper && npm audit --audit-level=high || true
+    - name: Syntax check scraper files
+      run: node --check scraper/index.js && node --check scraper/display.js
+    - name: Syntax check frontend files
+      run: node --check app.js && node --check theme-init.js
+    - uses: actions/setup-python@v5
+      with:
+        python-version: 3.x
+    - name: Run parity check
+      run: python3 check-parity.py

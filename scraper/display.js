@@ -57,10 +57,10 @@ function waitClass(minutes) {
 
 // --- Semantic layer: what to communicate about a lift ---
 
-function computeLiftDisplay(lift, timezone) {
+function computeLiftDisplay(lift, timezone, nowOverride) {
   const { status, scheduled, start_time: start, end_time: end, waitMinutes: wait } = lift;
 
-  const now = nowMinutes(timezone);
+  const now = nowOverride != null ? nowOverride : nowMinutes(timezone);
   const startMin = start ? toMin(start) : null;
   const endMin = end ? toMin(end) : null;
   const beforeOpen = startMin !== null && now < startMin;
@@ -153,13 +153,13 @@ function computeRenderedColumns(display, hasAnyWait) {
  * @param {string} timezone - IANA timezone string (e.g. 'America/Denver')
  * @returns {Array} same structure with `display` on each lift and `hasAnyWait` on each sub-resort
  */
-function augmentDisplay(subResorts, timezone) {
+function augmentDisplay(subResorts, timezone, nowOverride) {
   for (const sr of subResorts) {
     if (!sr.lifts) continue;
     const hasAnyWait = sr.lifts.some(l => l.waitMinutes != null);
     sr.hasAnyWait = hasAnyWait;
     for (const lift of sr.lifts) {
-      const semantic = computeLiftDisplay(lift, timezone);
+      const semantic = computeLiftDisplay(lift, timezone, nowOverride);
       const rendered = computeRenderedColumns(semantic, hasAnyWait);
       lift.display = {
         detailText: semantic.detailText,

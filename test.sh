@@ -328,7 +328,27 @@ fi
 assert_status "Display endpoint unknown resort returns 404"   "$BASE/api/display/fakesort" "404" 5
 
 # ===========================================================================
-# 11. ERROR HANDLING
+# 11. WEATHER ENDPOINT
+# ===========================================================================
+echo ""
+echo "--- Weather endpoint (server-vended weather stations) ---"
+
+assert_status "Weather /weather/niseko returns 200"     "$BASE/api/weather/niseko"     "200" 15
+assert_status "Weather /weather/heavenly returns 200"   "$BASE/api/weather/heavenly"   "200" 15
+assert_status "Weather /weather/alta returns 200"       "$BASE/api/weather/alta"       "200" 5
+assert_status "Weather /weather/snowbird returns 200"   "$BASE/api/weather/snowbird"   "200" 5
+assert_status "Weather unknown returns 404"             "$BASE/api/weather/fakesort"   "404" 5
+
+# Validate structure
+assert_html_contains "Weather niseko has stations"      "$BASE/api/weather/niseko"     "stations" 15
+assert_html_contains "Weather heavenly has stations"    "$BASE/api/weather/heavenly"   "stations" 15
+
+# Alta/Snowbird return empty subResorts (no weather capability)
+assert_html_contains "Weather alta has subResorts"      "$BASE/api/weather/alta"       "subResorts" 5
+assert_html_contains "Weather snowbird has subResorts"  "$BASE/api/weather/snowbird"   "subResorts" 5
+
+# ===========================================================================
+# 12. ERROR HANDLING
 # ===========================================================================
 echo ""
 echo "--- Error handling ---"

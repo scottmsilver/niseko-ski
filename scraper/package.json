@@ -1,10 +1,11 @@
 {
-  "name": "parkcity-scraper",
+  "name": "skilifts-scraper",
   "private": true,
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "test": "node --test display.test.js"
   },
   "dependencies": {
-    "puppeteer": "^24.0.0"
+    "puppeteer": "24.37.5"
   }
 }

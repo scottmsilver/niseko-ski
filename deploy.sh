@@ -142,6 +142,7 @@ phase2_deploy() {
   push_file "$REPO_DIR/app.js"        "/usr/share/nginx/html/app.js"
   push_file "$REPO_DIR/yotei.png"     "/usr/share/nginx/html/yotei.png"
   push_file "$REPO_DIR/trail-map.jpg" "/usr/share/nginx/html/trail-map.jpg"
+  push_file "$REPO_DIR/theme-init.js" "/usr/share/nginx/html/theme-init.js"
 
   # Data files
   for f in "$REPO_DIR"/data/*; do
@@ -169,9 +170,10 @@ phase2_deploy() {
     need_npm=1
   fi
 
-  push_file "$REPO_DIR/scraper/package.json" "/app/scraper/package.json"
-  push_file "$REPO_DIR/scraper/index.js"     "/app/scraper/index.js"
-  push_file "$REPO_DIR/scraper/display.js"   "/app/scraper/display.js"
+  push_file "$REPO_DIR/scraper/package.json"          "/app/scraper/package.json"
+  push_file "$REPO_DIR/scraper/index.js"              "/app/scraper/index.js"
+  push_file "$REPO_DIR/scraper/display.js"            "/app/scraper/display.js"
+  push_file "$REPO_DIR/scraper/shared-constants.json" "/app/scraper/shared-constants.json"
 
   if [ "$need_npm" -eq 1 ]; then
     info "Running npm install (package.json changed)"

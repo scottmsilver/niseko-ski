@@ -91,6 +91,20 @@ data class WeatherStation(
     val courseState: String,
 )
 
+// ── Weather display (server-vended, pre-formatted) ──
+
+data class WeatherStationDisplay(
+    val label: String,
+    val tempF: String,
+    val weather: String,
+    val icon: String,
+    val snowDisplay: String,
+    val snow24hDisplay: String,
+    val snowState: String,
+    val wind: String,
+    val courses: String,
+)
+
 // ── Fetch results ──
 
 data class SubResortData(
@@ -98,6 +112,7 @@ data class SubResortData(
     val name: String,
     val lifts: List<LiftInfo>?,
     val weather: List<WeatherStation>?,
+    val stations: List<WeatherStationDisplay>? = null,
 )
 
 data class FetchResult(

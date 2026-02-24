@@ -1,0 +1,72 @@
+{
+  "JP_EN_WEATHER": {
+    "吹雪": "Snow Storm",
+    "大雪": "Heavy Snow",
+    "小雪": "Light Snow",
+    "雪": "Snow",
+    "曇り": "Cloudy",
+    "晴れ": "Clear",
+    "雨": "Rain",
+    "粉雪": "Powder Snow",
+    "圧雪": "Packed Powder",
+    "湿雪": "Wet Snow",
+    "全面可能": "All Courses Open",
+    "一部可能": "Partial Open",
+    "閉鎖": "Closed",
+    "なし": "—"
+  },
+  "RESORT_TIMEZONES": {
+    "vail": "America/Denver",
+    "beavercreek": "America/Denver",
+    "breckenridge": "America/Denver",
+    "keystone": "America/Denver",
+    "crestedbutte": "America/Denver",
+    "parkcity": "America/Denver",
+    "heavenly": "America/Los_Angeles",
+    "northstar": "America/Los_Angeles",
+    "kirkwood": "America/Los_Angeles",
+    "stevenspass": "America/Los_Angeles",
+    "whistlerblackcomb": "America/Vancouver",
+    "stowe": "America/New_York",
+    "okemo": "America/New_York",
+    "mtsnow": "America/New_York",
+    "mountsunapee": "America/New_York",
+    "attitashmountain": "America/New_York",
+    "wildcatmountain": "America/New_York",
+    "crotchedmountain": "America/New_York",
+    "hunter": "America/New_York",
+    "sevensprings": "America/New_York",
+    "libertymountain": "America/New_York",
+    "roundtopmountain": "America/New_York",
+    "whitetail": "America/New_York",
+    "jackfrostbigboulder": "America/New_York",
+    "hiddenvalleypa": "America/New_York",
+    "laurelmountain": "America/New_York",
+    "aftonalps": "America/Chicago",
+    "mtbrighton": "America/Detroit",
+    "wilmotmountain": "America/Chicago",
+    "alpinevalley": "America/New_York",
+    "bmbw": "America/New_York",
+    "madrivermountain": "America/New_York",
+    "hiddenvalley": "America/Chicago",
+    "snowcreek": "America/Chicago",
+    "paolipeaks": "America/Indiana/Indianapolis",
+    "alta": "America/Denver",
+    "snowbird": "America/Denver"
+  },
+  "VAIL_STATUS_MAP": {
+    "Open": "OPERATING",
+    "Scheduled": "CLOSED",
+    "OnHold": "ON_HOLD",
+    "Closed": "CLOSED"
+  },
+  "SNOWBIRD_STATUS_MAP": {
+    "open": "OPERATING",
+    "expected": "CLOSED",
+    "closed": "CLOSED"
+  },
+  "NISEKO_STATUS_MAP": {
+    "OPERATION_TEMPORARILY_SUSPENDED": "ON_HOLD",
+    "SUSPENDED_CLOSED": "CLOSED"
+  }
+}

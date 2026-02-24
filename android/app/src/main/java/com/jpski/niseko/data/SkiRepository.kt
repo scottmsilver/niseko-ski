@@ -4,7 +4,10 @@ import java.util.concurrent.CopyOnWriteArrayList
 
 class SkiRepository {
     private val api = SkiApi()
+    @Volatile
     var activeResort: ResortConfig = NISEKO_RESORTS.first()
+
+    @Volatile
     private var previousData: FetchResult? = null
     val changeLog = CopyOnWriteArrayList<ChangeEntry>()
 
