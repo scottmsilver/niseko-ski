@@ -333,19 +333,49 @@ assert_status "Display endpoint unknown resort returns 404"   "$BASE/api/display
 echo ""
 echo "--- Weather endpoint (server-vended weather stations) ---"
 
-assert_status "Weather /weather/niseko returns 200"     "$BASE/api/weather/niseko"     "200" 15
-assert_status "Weather /weather/heavenly returns 200"   "$BASE/api/weather/heavenly"   "200" 15
-assert_status "Weather /weather/alta returns 200"       "$BASE/api/weather/alta"       "200" 5
-assert_status "Weather /weather/snowbird returns 200"   "$BASE/api/weather/snowbird"   "200" 5
-assert_status "Weather unknown returns 404"             "$BASE/api/weather/fakesort"   "404" 5
+assert_status "Weather /weather/niseko returns 200"           "$BASE/api/weather/niseko"           "200" 15
+assert_status "Weather /weather/heavenly returns 200"         "$BASE/api/weather/heavenly"         "200" 15
+assert_status "Weather /weather/alta returns 200"             "$BASE/api/weather/alta"             "200" 15
+assert_status "Weather /weather/snowbird returns 200"         "$BASE/api/weather/snowbird"         "200" 15
+assert_status "Weather /weather/brighton returns 200"         "$BASE/api/weather/brighton"         "200" 15
+assert_status "Weather /weather/solitude returns 200"         "$BASE/api/weather/solitude"         "200" 15
+assert_status "Weather /weather/dartmouthskiway returns 200"  "$BASE/api/weather/dartmouthskiway"  "200" 15
+assert_status "Weather unknown returns 404"                   "$BASE/api/weather/fakesort"         "404" 5
 
-# Validate structure
-assert_html_contains "Weather niseko has stations"      "$BASE/api/weather/niseko"     "stations" 15
-assert_html_contains "Weather heavenly has stations"    "$BASE/api/weather/heavenly"   "stations" 15
+# Validate structure — all weather endpoints should return stations
+assert_html_contains "Weather niseko has stations"            "$BASE/api/weather/niseko"           "stations" 15
+assert_html_contains "Weather heavenly has stations"          "$BASE/api/weather/heavenly"         "stations" 15
+assert_html_contains "Weather alta has stations"              "$BASE/api/weather/alta"             "stations" 15
+assert_html_contains "Weather snowbird has stations"          "$BASE/api/weather/snowbird"         "stations" 15
+assert_html_contains "Weather brighton has stations"          "$BASE/api/weather/brighton"         "stations" 15
+assert_html_contains "Weather solitude has stations"          "$BASE/api/weather/solitude"         "stations" 15
+assert_html_contains "Weather dartmouthskiway has stations"   "$BASE/api/weather/dartmouthskiway"  "stations" 15
 
-# Alta/Snowbird return empty subResorts (no weather capability)
-assert_html_contains "Weather alta has subResorts"      "$BASE/api/weather/alta"       "subResorts" 5
-assert_html_contains "Weather snowbird has subResorts"  "$BASE/api/weather/snowbird"   "subResorts" 5
+# Validate weather station data has expected fields (catches missing tempF/label/weather)
+for slug in alta snowbird brighton solitude dartmouthskiway; do
+  WX_BODY=$(curl -s --max-time 15 "$BASE/api/weather/$slug" 2>/dev/null || echo "")
+  HAS_FIELDS=$(echo "$WX_BODY" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    subs = d.get('subResorts', [])
+    assert len(subs) > 0, 'no subResorts'
+    stations = subs[0].get('stations', [])
+    assert len(stations) > 0, 'no stations'
+    s = stations[0]
+    assert 'tempF' in s and s['tempF'] != '', 'missing tempF'
+    assert 'label' in s and s['label'] != '', 'missing label'
+    assert 'weather' in s and s['weather'] != '', 'missing weather'
+    print('ok')
+except Exception as e:
+    print(f'fail: {e}')
+" 2>/dev/null)
+  if [ "$HAS_FIELDS" = "ok" ]; then
+    pass "Weather $slug station has tempF, label, weather fields"
+  else
+    fail "Weather $slug station missing required fields ($HAS_FIELDS)"
+  fi
+done
 
 # ===========================================================================
 # 12. ERROR HANDLING

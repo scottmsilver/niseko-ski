@@ -406,12 +406,19 @@ RESORT_ADAPTERS.snowbird = {
   region: 'Utah',
   timezone: 'America/Denver',
   headerImage: null,
-  capabilities: { weather: false, trailMap: true, interactiveMap: false },
+  capabilities: { weather: true, trailMap: true, interactiveMap: false },
 
   async fetchData() {
-    const displayRes = await fetch('/api/display/snowbird').then(r => r.ok ? r.json() : null).catch(() => null);
+    const [displayRes, weatherRes] = await Promise.all([
+      fetch('/api/display/snowbird').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/api/weather/snowbird').then(r => r.ok ? r.json() : null).catch(() => null),
+    ]);
+    const wxMap = {};
+    if (weatherRes && weatherRes.subResorts) {
+      weatherRes.subResorts.forEach(w => { wxMap[w.id] = w.stations; });
+    }
     if (displayRes && displayRes.subResorts) {
-      return { subResorts: displayRes.subResorts.map(sr => ({ ...sr, weather: null })), capabilities: this.capabilities };
+      return { subResorts: displayRes.subResorts.map(sr => ({ ...sr, weather: null, stations: wxMap[sr.id] || wxMap['snowbird'] || null })), capabilities: this.capabilities };
     }
     // Fallback: parse client-side
     const res = await fetch('/api/snowbird/lifts');
@@ -446,12 +453,19 @@ RESORT_ADAPTERS.alta = {
   region: 'Utah',
   timezone: 'America/Denver',
   headerImage: null,
-  capabilities: { weather: false, trailMap: true, interactiveMap: false },
+  capabilities: { weather: true, trailMap: true, interactiveMap: false },
 
   async fetchData() {
-    const displayRes = await fetch('/api/display/alta').then(r => r.ok ? r.json() : null).catch(() => null);
+    const [displayRes, weatherRes] = await Promise.all([
+      fetch('/api/display/alta').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/api/weather/alta').then(r => r.ok ? r.json() : null).catch(() => null),
+    ]);
+    const wxMap = {};
+    if (weatherRes && weatherRes.subResorts) {
+      weatherRes.subResorts.forEach(w => { wxMap[w.id] = w.stations; });
+    }
     if (displayRes && displayRes.subResorts) {
-      return { subResorts: displayRes.subResorts.map(sr => ({ ...sr, weather: null })), capabilities: this.capabilities };
+      return { subResorts: displayRes.subResorts.map(sr => ({ ...sr, weather: null, stations: wxMap[sr.id] || wxMap['alta'] || null })), capabilities: this.capabilities };
     }
     // Fallback: parse client-side
     const res = await fetch('/api/alta');
@@ -465,6 +479,137 @@ RESORT_ADAPTERS.alta = {
       waitMinutes: null, updateDate: null,
     }));
     return { subResorts: [{ id: 'alta', name: 'Alta', lifts, weather: null }], capabilities: this.capabilities };
+  },
+};
+
+// =====================================================
+// Ikon Pass: Brighton Adapter
+// =====================================================
+// --- Brighton (Ikon Pass / Boyne Resorts) ---
+// CANONICAL SOURCE: scraper/shared-constants.json — keep in sync
+const BRIGHTON_STATUS_MAP = {
+  'Open': 'OPERATING',
+  'Closed': 'CLOSED',
+};
+
+RESORT_ADAPTERS.brighton = {
+  id: 'brighton',
+  name: 'Brighton',
+  group: 'Ikon Pass',
+  region: 'Utah',
+  timezone: 'America/Denver',
+  headerImage: null,
+  capabilities: { weather: true, trailMap: true, interactiveMap: false },
+
+  async fetchData() {
+    // Primary: server-vended display + weather
+    const [displayRes, weatherRes] = await Promise.all([
+      fetch('/api/display/brighton').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/api/weather/brighton').then(r => r.ok ? r.json() : null).catch(() => null),
+    ]);
+    const wxMap = {};
+    if (weatherRes && weatherRes.subResorts) {
+      weatherRes.subResorts.forEach(w => { wxMap[w.id] = w.stations; });
+    }
+    if (displayRes && displayRes.subResorts) {
+      return { subResorts: displayRes.subResorts.map(sr => ({ ...sr, stations: wxMap[sr.id] || wxMap['brighton'] || null })), capabilities: this.capabilities };
+    }
+    // Fallback: direct API
+    const res = await fetch('/api/brighton');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const raw = await res.json();
+    const lifts = (Array.isArray(raw) ? raw : []).map(l => ({
+      name: l.name || 'Unknown',
+      status: BRIGHTON_STATUS_MAP[l.status] || 'CLOSED',
+      waitMinutes: l.skierWaitTime || null,
+      start_time: l.openTime || null,
+      end_time: l.closeTime || null,
+    }));
+    const subResorts = [{ id: 'brighton', name: 'Brighton', lifts }];
+    return { subResorts, capabilities: this.capabilities };
+  },
+};
+
+// =====================================================
+// Ikon Pass: Solitude Adapter
+// =====================================================
+// --- Solitude (Ikon Pass) ---
+// CANONICAL SOURCE: scraper/shared-constants.json — keep in sync
+const SOLITUDE_STATUS_MAP = {
+  'open': 'OPERATING',
+  'closed': 'CLOSED',
+};
+
+RESORT_ADAPTERS.solitude = {
+  id: 'solitude',
+  name: 'Solitude',
+  group: 'Ikon Pass',
+  region: 'Utah',
+  timezone: 'America/Denver',
+  headerImage: null,
+  capabilities: { weather: true, trailMap: true, interactiveMap: false },
+
+  async fetchData() {
+    // Primary: server-vended display + weather
+    const [displayRes, weatherRes] = await Promise.all([
+      fetch('/api/display/solitude').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/api/weather/solitude').then(r => r.ok ? r.json() : null).catch(() => null),
+    ]);
+    const wxMap = {};
+    if (weatherRes && weatherRes.subResorts) {
+      weatherRes.subResorts.forEach(w => { wxMap[w.id] = w.stations; });
+    }
+    if (displayRes && displayRes.subResorts) {
+      return { subResorts: displayRes.subResorts.map(sr => ({ ...sr, stations: wxMap[sr.id] || wxMap['solitude'] || null })), capabilities: this.capabilities };
+    }
+    // Fallback: direct API
+    const res = await fetch('/api/solitude');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const raw = await res.json();
+    const liftList = Array.isArray(raw) ? raw : [];
+    const areas = {};
+    for (const l of liftList) {
+      const area = l.MountainAreaName || 'Solitude';
+      if (!areas[area]) areas[area] = [];
+      areas[area].push({
+        name: l.Name || 'Unknown',
+        status: SOLITUDE_STATUS_MAP[l.StatusEnglish] || SOLITUDE_STATUS_MAP[l.Status] || 'CLOSED',
+        waitMinutes: l.WaitTime || null,
+      });
+    }
+    const subResorts = Object.entries(areas).map(([name, lifts]) => ({
+      id: name.toLowerCase().replace(/\s+/g, '-'),
+      name,
+      lifts,
+    }));
+    return { subResorts, capabilities: this.capabilities };
+  },
+};
+
+// =====================================================
+// Independent: Dartmouth Skiway Adapter
+// =====================================================
+// --- Dartmouth Skiway (Independent) ---
+RESORT_ADAPTERS.dartmouthskiway = {
+  id: 'dartmouthskiway',
+  name: 'Dartmouth Skiway',
+  group: 'Independent',
+  region: 'New Hampshire',
+  timezone: 'America/New_York',
+  headerImage: null,
+  capabilities: { weather: true, trailMap: true, interactiveMap: false },
+
+  async fetchData() {
+    // Server-vended display + weather
+    const [displayRes, weatherRes] = await Promise.all([
+      fetch('/api/display/dartmouthskiway').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/api/weather/dartmouthskiway').then(r => r.ok ? r.json() : null).catch(() => null),
+    ]);
+    const wxStations = weatherRes && weatherRes.subResorts && weatherRes.subResorts[0] ? weatherRes.subResorts[0].stations : null;
+    if (displayRes && displayRes.subResorts) {
+      return { subResorts: displayRes.subResorts.map(sr => ({ ...sr, stations: wxStations })), capabilities: this.capabilities };
+    }
+    throw new Error('Dartmouth Skiway data unavailable');
   },
 };
 

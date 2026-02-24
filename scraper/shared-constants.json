@@ -52,7 +52,10 @@
     "snowcreek": "America/Chicago",
     "paolipeaks": "America/Indiana/Indianapolis",
     "alta": "America/Denver",
-    "snowbird": "America/Denver"
+    "snowbird": "America/Denver",
+    "brighton": "America/Denver",
+    "solitude": "America/Denver",
+    "dartmouthskiway": "America/New_York"
   },
   "VAIL_STATUS_MAP": {
     "Open": "OPERATING",
@@ -68,5 +71,13 @@
   "NISEKO_STATUS_MAP": {
     "OPERATION_TEMPORARILY_SUSPENDED": "ON_HOLD",
     "SUSPENDED_CLOSED": "CLOSED"
+  },
+  "BRIGHTON_STATUS_MAP": {
+    "Open": "OPERATING",
+    "Closed": "CLOSED"
+  },
+  "SOLITUDE_STATUS_MAP": {
+    "open": "OPERATING",
+    "closed": "CLOSED"
   }
 }

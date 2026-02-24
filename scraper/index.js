@@ -317,6 +317,21 @@ setInterval(() => {
     log('[snowbird] Dropping from cache (stale)');
     snowbirdCache = { data: null, fetchedAt: 0, fetching: false };
   }
+  // Brighton cache cleanup
+  if (brightonCache.data && !brightonCache.fetching && (now - brightonCache.fetchedAt) > BRIGHTON_CACHE_TTL_MS) {
+    log('[brighton] Dropping from cache (stale)');
+    brightonCache = { data: null, fetchedAt: 0, fetching: false };
+  }
+  // Solitude cache cleanup
+  if (solitudeCache.data && !solitudeCache.fetching && (now - solitudeCache.fetchedAt) > SOLITUDE_CACHE_TTL_MS) {
+    log('[solitude] Dropping from cache (stale)');
+    solitudeCache = { data: null, fetchedAt: 0, fetching: false };
+  }
+  // Dartmouth Skiway cache cleanup
+  if (dartmouthSkiwayCache.data && !dartmouthSkiwayCache.fetching && (now - dartmouthSkiwayCache.fetchedAt) > DARTMOUTH_CACHE_TTL_MS) {
+    log('[dartmouthskiway] Dropping from cache (stale)');
+    dartmouthSkiwayCache = { data: null, fetchedAt: 0, fetching: false };
+  }
 }, CLEANUP_INTERVAL_MS);
 
 // ---------------------------------------------------------------------------
@@ -431,6 +446,199 @@ async function getSnowbirdData() {
     snowbirdCache.fetching = false;
     resolveSnowbird();
     snowbirdCache.promise = null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Brighton: Boyne Azure API fetch with caching
+// ---------------------------------------------------------------------------
+const BRIGHTON_CACHE_TTL_MS = 120000;
+let brightonCache = { data: null, fetchedAt: 0, fetching: false };
+
+function fetchBrightonData() {
+  return new Promise((resolve, reject) => {
+    const req = https.get('https://apim-marketing-001.azure-api.net/FeedService/v1/Feed/Facilities/Areas/Lifts/All?resortName=br', r => {
+      if (r.statusCode !== 200) { r.resume(); return reject(new Error(`HTTP ${r.statusCode}`)); }
+      const chunks = [];
+      let totalBytes = 0;
+      r.on('data', chunk => {
+        totalBytes += chunk.length;
+        if (totalBytes > MAX_RESPONSE_BYTES) { r.destroy(new Error('Response too large')); return; }
+        chunks.push(chunk);
+      });
+      r.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString())); } catch (e) { reject(e); } });
+      r.on('error', reject);
+    });
+    req.on('error', reject);
+    req.setTimeout(15000, () => { req.destroy(new Error('Timeout')); });
+  });
+}
+
+async function getBrightonData() {
+  const now = Date.now();
+  if (brightonCache.data && (now - brightonCache.fetchedAt) < BRIGHTON_CACHE_TTL_MS) {
+    return brightonCache.data;
+  }
+
+  if (brightonCache.fetching && brightonCache.promise) {
+    await brightonCache.promise;
+    if (brightonCache.data) return brightonCache.data;
+  }
+
+  brightonCache.fetching = true;
+  let resolveBrighton;
+  brightonCache.promise = new Promise(r => { resolveBrighton = r; });
+  try {
+    const data = await fetchBrightonData();
+    brightonCache.data = data;
+    brightonCache.fetchedAt = Date.now();
+    log(`[brighton] Fetched ${(Array.isArray(data) ? data.length : 0)} lifts`);
+    return data;
+  } finally {
+    brightonCache.fetching = false;
+    resolveBrighton();
+    brightonCache.promise = null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Solitude: mtnpowder.com API fetch with caching
+// ---------------------------------------------------------------------------
+const SOLITUDE_CACHE_TTL_MS = 120000;
+let solitudeCache = { data: null, fetchedAt: 0, fetching: false };
+
+function fetchSolitudeData() {
+  return new Promise((resolve, reject) => {
+    const req = https.get('https://mtnpowder.com/feed/65/lifts', r => {
+      if (r.statusCode !== 200) { r.resume(); return reject(new Error(`HTTP ${r.statusCode}`)); }
+      const chunks = [];
+      let totalBytes = 0;
+      r.on('data', chunk => {
+        totalBytes += chunk.length;
+        if (totalBytes > MAX_RESPONSE_BYTES) { r.destroy(new Error('Response too large')); return; }
+        chunks.push(chunk);
+      });
+      r.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString())); } catch (e) { reject(e); } });
+      r.on('error', reject);
+    });
+    req.on('error', reject);
+    req.setTimeout(15000, () => { req.destroy(new Error('Timeout')); });
+  });
+}
+
+async function getSolitudeData() {
+  const now = Date.now();
+  if (solitudeCache.data && (now - solitudeCache.fetchedAt) < SOLITUDE_CACHE_TTL_MS) {
+    return solitudeCache.data;
+  }
+
+  if (solitudeCache.fetching && solitudeCache.promise) {
+    await solitudeCache.promise;
+    if (solitudeCache.data) return solitudeCache.data;
+  }
+
+  solitudeCache.fetching = true;
+  let resolveSolitude;
+  solitudeCache.promise = new Promise(r => { resolveSolitude = r; });
+  try {
+    const data = await fetchSolitudeData();
+    solitudeCache.data = data;
+    solitudeCache.fetchedAt = Date.now();
+    log(`[solitude] Fetched ${(Array.isArray(data) ? data.length : 0)} lifts`);
+    return data;
+  } finally {
+    solitudeCache.fetching = false;
+    resolveSolitude();
+    solitudeCache.promise = null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Dartmouth Skiway: Puppeteer scraping with caching
+// ---------------------------------------------------------------------------
+const DARTMOUTH_CACHE_TTL_MS = 120000;
+let dartmouthSkiwayCache = { data: null, fetchedAt: 0, fetching: false };
+
+async function fetchDartmouthSkiwayData() {
+  let browser;
+  try {
+    browser = await ensureBrowser();
+    const page = await browser.newPage();
+    await page.goto('https://dartmouth-skiway.app.alpinemedia.com/embed/lifts-trails/conditions', { waitUntil: 'networkidle2', timeout: 30000 });
+
+    // Wait for lift data to render
+    await page.waitForSelector('[class*="lift"], [class*="Lift"], [data-testid*="lift"]', { timeout: 15000 }).catch(() => {});
+
+    // Extract lift data from the rendered page
+    const lifts = await page.evaluate(() => {
+      const results = [];
+      // Alpine Media renders lifts in a list. Look for lift status elements.
+      const rows = document.querySelectorAll('tr, [class*="row"], [class*="Row"]');
+      for (const row of rows) {
+        const name = row.querySelector('td:first-child, [class*="name"], [class*="Name"]');
+        const status = row.querySelector('[class*="status"], [class*="Status"], [class*="icon"], [class*="Icon"]');
+        if (name && status) {
+          const nameText = name.textContent.trim();
+          const statusText = status.textContent.trim().toLowerCase();
+          if (nameText && nameText.length < 50) {
+            results.push({
+              name: nameText,
+              status: statusText.includes('open') ? 'OPERATING' : 'CLOSED',
+            });
+          }
+        }
+      }
+      // Fallback: look for any structured data
+      if (results.length === 0) {
+        const allText = document.body.innerText;
+        const knownLifts = ['Winslow', 'Holts', "Holt's Ledge", 'Big Kid Carpet', 'Little Kid Carpet'];
+        for (const lift of knownLifts) {
+          const idx = allText.indexOf(lift);
+          if (idx >= 0) {
+            const context = allText.substring(idx, idx + 100).toLowerCase();
+            results.push({
+              name: lift,
+              status: context.includes('open') ? 'OPERATING' : 'CLOSED',
+            });
+          }
+        }
+      }
+      return results;
+    });
+
+    try { await page.close(); } catch (_) {}
+    return lifts;
+  } catch (e) {
+    log(`[dartmouthskiway] Scrape failed: ${e.message}`);
+    if (browser && !browser.isConnected()) browser = null;
+    return [];
+  }
+}
+
+async function getDartmouthSkiwayData() {
+  const now = Date.now();
+  if (dartmouthSkiwayCache.data && (now - dartmouthSkiwayCache.fetchedAt) < DARTMOUTH_CACHE_TTL_MS) {
+    return dartmouthSkiwayCache.data;
+  }
+
+  if (dartmouthSkiwayCache.fetching && dartmouthSkiwayCache.promise) {
+    await dartmouthSkiwayCache.promise;
+    if (dartmouthSkiwayCache.data) return dartmouthSkiwayCache.data;
+  }
+
+  dartmouthSkiwayCache.fetching = true;
+  let resolveDartmouth;
+  dartmouthSkiwayCache.promise = new Promise(r => { resolveDartmouth = r; });
+  try {
+    const data = await fetchDartmouthSkiwayData();
+    dartmouthSkiwayCache.data = data;
+    dartmouthSkiwayCache.fetchedAt = Date.now();
+    log(`[dartmouthskiway] Fetched ${(Array.isArray(data) ? data.length : 0)} lifts`);
+    return data;
+  } finally {
+    dartmouthSkiwayCache.fetching = false;
+    resolveDartmouth();
+    dartmouthSkiwayCache.promise = null;
   }
 }
 
@@ -606,6 +814,15 @@ const ALTA_TRAILMAP_URL = 'https://res.cloudinary.com/altaskiarea/image/upload/f
 // Snowbird: official CMS image
 const SNOWBIRD_TRAILMAP_URL = 'https://cms.snowbird.com/sites/default/files/2025-11/snowbird_trailmap_winter_2526.jpg';
 
+// Brighton: Sanity CDN
+const BRIGHTON_TRAILMAP_URL = 'https://cdn.sanity.io/images/8ts88bij/brighton/054a292be7317db1ff8f31cf9860cd22c7b90855-2500x1406.jpg';
+
+// Solitude: official trail map image
+const SOLITUDE_TRAILMAP_URL = 'https://www.solitudemountain.com/-/media/solitude/trail-map-images/solitude-winter-trail-map.JPG';
+
+// Dartmouth Skiway: WordPress-hosted trail map
+const DARTMOUTH_TRAILMAP_URL = 'https://dartmouthskiway.com/wp-content/uploads/2022/12/DSW_22-23-Final-Map.png';
+
 // Fetch a URL as a raw buffer without browser-like User-Agent.
 // Vail's Akamai CDN serves WAF challenge pages to browser UAs on PDF assets.
 function fetchRawBuffer(url, _redirects = 0) {
@@ -667,6 +884,9 @@ async function renderPdfAsImage(pdfUrl, pageNum) {
 async function discoverTrailMapUrl(slug) {
   if (slug === 'alta') return ALTA_TRAILMAP_URL;
   if (slug === 'snowbird') return SNOWBIRD_TRAILMAP_URL;
+  if (slug === 'brighton') return BRIGHTON_TRAILMAP_URL;
+  if (slug === 'solitude') return SOLITUDE_TRAILMAP_URL;
+  if (slug === 'dartmouthskiway') return DARTMOUTH_TRAILMAP_URL;
   if (TERRAIN_URLS[slug]) {
     // Try scene7 image first, then direct image override, then PDF fallback
     const imageUrl = await discoverVailTrailMapUrl(slug);
@@ -847,6 +1067,84 @@ function normalizeSnowbirdData(raw) {
     name, lifts,
   }));
   return augmentDisplay(subResorts, 'America/Denver');
+}
+
+// Helper: convert "8:00 AM" style time strings to 24h "08:00"
+function to24(timeStr) {
+  if (!timeStr) return null;
+  const m = timeStr.match(/(\d+):(\d+)\s*(AM|PM)/i);
+  if (!m) return null;
+  let h = parseInt(m[1], 10);
+  const min = m[2];
+  const period = m[3].toUpperCase();
+  if (period === 'PM' && h !== 12) h += 12;
+  if (period === 'AM' && h === 12) h = 0;
+  return `${String(h).padStart(2, '0')}:${min}`;
+}
+
+// Normalize raw Brighton data into the shared format
+function normalizeBrightonData(raw) {
+  const BRIGHTON_STATUS = SHARED.BRIGHTON_STATUS_MAP;
+  const tz = SHARED.RESORT_TIMEZONES.brighton;
+  const lifts = (Array.isArray(raw) ? raw : []).map(l => ({
+    name: l.name || 'Unknown',
+    status: BRIGHTON_STATUS[l.status] || 'CLOSED',
+    waitMinutes: l.skierWaitTime || null,
+    start_time: l.openTime || null,
+    end_time: l.closeTime || null,
+  }));
+  const subResorts = [{ id: 'brighton', name: 'Brighton', lifts }];
+  return augmentDisplay(subResorts, tz);
+}
+
+// Normalize raw Solitude data into the shared format (grouped by MountainAreaName)
+function normalizeSolitudeData(raw) {
+  const SOLITUDE_STATUS = SHARED.SOLITUDE_STATUS_MAP;
+  const tz = SHARED.RESORT_TIMEZONES.solitude;
+  const liftList = Array.isArray(raw) ? raw : [];
+
+  // Group lifts by MountainAreaName
+  const areas = {};
+  for (const l of liftList) {
+    const area = l.MountainAreaName || 'Solitude';
+    if (!areas[area]) areas[area] = [];
+    // Convert "8:00 AM" style hours to 24h "08:00"
+    let startTime = null, endTime = null;
+    const today = new Date().toLocaleDateString('en-US', { weekday: 'long' });
+    if (l.Hours && l.Hours[today]) {
+      startTime = to24(l.Hours[today].Open);
+      endTime = to24(l.Hours[today].Close);
+    }
+    areas[area].push({
+      name: l.Name || 'Unknown',
+      status: SOLITUDE_STATUS[l.StatusEnglish] || SOLITUDE_STATUS[l.Status] || 'CLOSED',
+      waitMinutes: l.WaitTime || null,
+      start_time: startTime,
+      end_time: endTime,
+    });
+  }
+
+  const subResorts = Object.entries(areas).map(([name, lifts]) => ({
+    id: name.toLowerCase().replace(/\s+/g, '-'),
+    name,
+    lifts,
+  }));
+
+  return augmentDisplay(subResorts, tz);
+}
+
+// Normalize raw Dartmouth Skiway data into the shared format
+function normalizeDartmouthSkiwayData(raw) {
+  const tz = SHARED.RESORT_TIMEZONES.dartmouthskiway;
+  const lifts = (Array.isArray(raw) ? raw : []).map(l => ({
+    name: l.name || 'Unknown',
+    status: l.status || 'CLOSED',
+    waitMinutes: null,
+    start_time: null,
+    end_time: null,
+  }));
+  const subResorts = [{ id: 'dartmouthskiway', name: 'Dartmouth Skiway', lifts }];
+  return augmentDisplay(subResorts, tz);
 }
 
 // Normalize raw Niseko (yukiyama) data into shared format
@@ -1038,8 +1336,157 @@ function normalizeVailWeather(slug, raw) {
   return [{ id: slug, name: slug, stations: [station] }];
 }
 
+// ---------------------------------------------------------------------------
+// NWS + SNOTEL weather for Ikon/Independent resorts
+// ---------------------------------------------------------------------------
+
+const NWS_SNOTEL_RESORTS = {
+  alta:            { nws: 'SLC/108,167', snotel: '1308:UT:SNTL', name: 'Alta' },
+  snowbird:        { nws: 'SLC/108,166', snotel: '766:UT:SNTL',  name: 'Snowbird' },
+  brighton:        { nws: 'SLC/110,167', snotel: '366:UT:SNTL',  name: 'Brighton' },
+  solitude:        { nws: 'SLC/110,168', snotel: '628:UT:SNTL',  name: 'Solitude' },
+  dartmouthskiway: { nws: 'GYX/10,52',  snotel: null,            name: 'Dartmouth Skiway' },
+};
+
+function fetchHTTPS(url, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { headers: { Accept: 'application/json', 'User-Agent': 'skilifts-weather/1.0', ...headers } }, (r) => {
+      if (r.statusCode !== 200) {
+        r.resume();
+        return reject(new Error(`HTTP ${r.statusCode} for ${url}`));
+      }
+      const chunks = [];
+      let totalBytes = 0;
+      r.on('data', c => {
+        totalBytes += c.length;
+        if (totalBytes > MAX_RESPONSE_BYTES) { r.destroy(new Error('Response too large')); return; }
+        chunks.push(c);
+      });
+      r.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString())); } catch (e) { reject(e); } });
+    });
+    req.on('error', reject);
+    req.setTimeout(15000, () => { req.destroy(new Error('Timeout')); });
+  });
+}
+
+function fetchHTTPSText(url) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { headers: { 'User-Agent': 'skilifts-weather/1.0' } }, (r) => {
+      if (r.statusCode !== 200) {
+        r.resume();
+        return reject(new Error(`HTTP ${r.statusCode} for ${url}`));
+      }
+      const chunks = [];
+      let totalBytes = 0;
+      r.on('data', c => {
+        totalBytes += c.length;
+        if (totalBytes > MAX_RESPONSE_BYTES) { r.destroy(new Error('Response too large')); return; }
+        chunks.push(c);
+      });
+      r.on('end', () => resolve(Buffer.concat(chunks).toString()));
+    });
+    req.on('error', reject);
+    req.setTimeout(15000, () => { req.destroy(new Error('Timeout')); });
+  });
+}
+
+async function fetchNWSForecast(gridId) {
+  const data = await fetchHTTPS(`https://api.weather.gov/gridpoints/${gridId}/forecast`);
+  const periods = data.properties && data.properties.periods;
+  if (!periods || periods.length === 0) return null;
+  // Return the current period (first one)
+  return periods[0];
+}
+
+async function fetchSnotelData(triplet) {
+  if (!triplet) return null;
+  const today = new Date().toISOString().slice(0, 10);
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const url = `https://wcc.sc.egov.usda.gov/reportGenerator/view_csv/customSingleStationReport/daily/${triplet}/-1,0/SNWD::value,WTEQ::value,TOBS::value,SNWD::delta`;
+  const text = await fetchHTTPSText(url);
+  // Parse CSV: skip comment lines starting with #
+  const lines = text.split('\n').filter(l => l.trim() && !l.startsWith('#'));
+  if (lines.length < 2) return null; // header + at least 1 data row
+  const headers = lines[0].split(',').map(h => h.trim());
+  // Use last data row (most recent day)
+  const vals = lines[lines.length - 1].split(',').map(v => v.trim());
+  // Match columns by prefix (headers have extra suffixes like "Start of Day Values")
+  const findCol = (prefix) => {
+    const idx = headers.findIndex(h => h.startsWith(prefix));
+    if (idx < 0) return null;
+    const v = parseFloat(vals[idx]);
+    return isNaN(v) ? null : v;
+  };
+  return {
+    snowDepthIn: findCol('Snow Depth (in)'),
+    sweIn: findCol('Snow Water Equivalent (in)'),
+    tempF: findCol('Air Temperature Observed (degF)'),
+    snowChangeIn: findCol('Change In Snow Depth (in)'),
+  };
+}
+
+function inToSnowDisplay(inches) {
+  if (inches == null || isNaN(inches)) return '\u2014';
+  const cm = Math.round(inches * 2.54);
+  return `${inches}" (${cm}cm)`;
+}
+
+async function normalizeNWSSnotelWeather(slug) {
+  const cfg = NWS_SNOTEL_RESORTS[slug];
+  if (!cfg) return [];
+
+  const [nws, snotel] = await Promise.all([
+    fetchNWSForecast(cfg.nws).catch(e => { log(`[weather:${slug}] NWS failed: ${e.message}`); return null; }),
+    cfg.snotel ? fetchSnotelData(cfg.snotel).catch(e => { log(`[weather:${slug}] SNOTEL failed: ${e.message}`); return null; }) : Promise.resolve(null),
+  ]);
+
+  if (!nws && !snotel) return [];
+
+  const stations = [];
+
+  // Station 1: Current conditions from SNOTEL (if available)
+  if (snotel) {
+    stations.push({
+      label: 'Mountain',
+      tempF: snotel.tempF != null ? `${Math.round(snotel.tempF)}\u00B0F` : '\u2014',
+      tempC: snotel.tempF != null ? `${Math.round((snotel.tempF - 32) * 5 / 9)}\u00B0C` : '\u2014',
+      weather: nws ? nws.shortForecast : '\u2014',
+      icon: nws ? wxIcon(nws.shortForecast) : '',
+      snowDisplay: inToSnowDisplay(snotel.snowDepthIn),
+      snow24hDisplay: snotel.snowChangeIn != null ? inToSnowDisplay(Math.max(0, snotel.snowChangeIn)) : '\u2014',
+      snowState: '\u2014',
+      wind: nws ? `${nws.windSpeed} ${nws.windDirection}` : '\u2014',
+      courses: '\u2014',
+    });
+  }
+
+  // Station 2 (or sole station): NWS Forecast
+  if (nws) {
+    const forecastStation = {
+      label: snotel ? 'Forecast' : 'Conditions',
+      tempF: `${nws.temperature}\u00B0${nws.temperatureUnit}`,
+      tempC: nws.temperatureUnit === 'F' ? `${Math.round((nws.temperature - 32) * 5 / 9)}\u00B0C` : `${nws.temperature}\u00B0C`,
+      weather: nws.shortForecast,
+      icon: wxIcon(nws.shortForecast),
+      snowDisplay: '\u2014',
+      snow24hDisplay: '\u2014',
+      snowState: '\u2014',
+      wind: `${nws.windSpeed} ${nws.windDirection}`,
+      courses: '\u2014',
+    };
+    // If SNOTEL gave us snow data, copy it to forecast station if it's the only one
+    if (!snotel) {
+      stations.push(forecastStation);
+    } else {
+      stations.push(forecastStation);
+    }
+  }
+
+  return [{ id: slug, name: cfg.name, stations }];
+}
+
 async function getWeatherData(slug) {
-  if (slug !== 'niseko' && slug !== 'alta' && slug !== 'snowbird' && !TERRAIN_URLS[slug]) {
+  if (slug !== 'niseko' && !NWS_SNOTEL_RESORTS[slug] && !TERRAIN_URLS[slug]) {
     return null;
   }
 
@@ -1068,8 +1515,8 @@ async function getWeatherData(slug) {
     let subResorts;
     if (slug === 'niseko') {
       subResorts = await normalizeNisekoWeather();
-    } else if (slug === 'alta' || slug === 'snowbird') {
-      subResorts = [];
+    } else if (NWS_SNOTEL_RESORTS[slug]) {
+      subResorts = await normalizeNWSSnotelWeather(slug);
     } else if (TERRAIN_URLS[slug]) {
       const raw = await fetchVailWeatherRaw(slug);
       subResorts = normalizeVailWeather(slug, raw);
@@ -1132,6 +1579,15 @@ const server = http.createServer(async (req, res) => {
       } else if (dSlug === 'snowbird') {
         const snowbirdRes = await getSnowbirdData();
         subResorts = normalizeSnowbirdData(snowbirdRes);
+      } else if (dSlug === 'brighton') {
+        const raw = await getBrightonData();
+        subResorts = normalizeBrightonData(raw);
+      } else if (dSlug === 'solitude') {
+        const raw = await getSolitudeData();
+        subResorts = normalizeSolitudeData(raw);
+      } else if (dSlug === 'dartmouthskiway') {
+        const raw = await getDartmouthSkiwayData();
+        subResorts = normalizeDartmouthSkiwayData(raw);
       } else if (TERRAIN_URLS[dSlug]) {
         const data = await getResortData(dSlug);
         if (!data) {

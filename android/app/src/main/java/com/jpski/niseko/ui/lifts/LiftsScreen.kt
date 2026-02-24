@@ -66,7 +66,7 @@ fun LiftsScreen(
                         agoText = TimeUtils.timeAgo(TimeUtils.latestUpdateDate(sr.lifts)),
                     )
                 }
-                items(sortedLifts, key = { "lift-${it.id}" }) { lift ->
+                items(sortedLifts, key = { "lift-${sr.id}-${it.id}" }) { lift ->
                     val isChanged = changes.any {
                         it.liftName == lift.name && (System.currentTimeMillis() - it.time) < 600_000
                     }

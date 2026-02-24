@@ -2,7 +2,7 @@ package com.jpski.niseko.data
 
 // ── Resort configuration ──
 
-enum class ResortType { NISEKO, VAIL, ALTA, SNOWBIRD }
+enum class ResortType { NISEKO, VAIL, ALTA, SNOWBIRD, BRIGHTON, SOLITUDE, DARTMOUTH_SKIWAY }
 
 data class Capabilities(
     val weather: Boolean = true,
@@ -191,8 +191,14 @@ val VAIL_RESORTS = listOf(
 )
 
 val IKON_RESORTS = listOf(
-    ResortConfig("alta", "Alta", "America/Denver", "Utah", ResortType.ALTA, Capabilities(weather = false, trailMap = true)),
-    ResortConfig("snowbird", "Snowbird", "America/Denver", "Utah", ResortType.SNOWBIRD, Capabilities(weather = false, trailMap = true)),
+    ResortConfig("alta", "Alta", "America/Denver", "Utah", ResortType.ALTA, Capabilities(weather = true, trailMap = true)),
+    ResortConfig("snowbird", "Snowbird", "America/Denver", "Utah", ResortType.SNOWBIRD, Capabilities(weather = true, trailMap = true)),
+    ResortConfig("brighton", "Brighton", "America/Denver", "Utah", ResortType.BRIGHTON, Capabilities(weather = true, trailMap = true)),
+    ResortConfig("solitude", "Solitude", "America/Denver", "Utah", ResortType.SOLITUDE, Capabilities(weather = true, trailMap = true)),
 )
 
-val ALL_RESORTS = NISEKO_RESORTS + VAIL_RESORTS + IKON_RESORTS
+val INDEPENDENT_RESORTS = listOf(
+    ResortConfig("dartmouthskiway", "Dartmouth Skiway", "America/New_York", "New Hampshire", ResortType.DARTMOUTH_SKIWAY, Capabilities(weather = true, trailMap = true)),
+)
+
+val ALL_RESORTS = NISEKO_RESORTS + VAIL_RESORTS + IKON_RESORTS + INDEPENDENT_RESORTS

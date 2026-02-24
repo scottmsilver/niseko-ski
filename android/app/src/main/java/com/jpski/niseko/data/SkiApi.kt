@@ -61,6 +61,9 @@ class SkiApi {
         ResortType.VAIL -> fetchVailData(resort)
         ResortType.ALTA -> fetchAltaData(resort)
         ResortType.SNOWBIRD -> fetchSnowbirdData(resort)
+        ResortType.BRIGHTON -> fetchGenericDisplayData(resort, "brighton")
+        ResortType.SOLITUDE -> fetchGenericDisplayData(resort, "solitude")
+        ResortType.DARTMOUTH_SKIWAY -> fetchGenericDisplayData(resort, "dartmouthskiway")
     }
 
     // ── Display endpoint (server-vended) ──
@@ -114,6 +117,30 @@ class SkiApi {
             Log.e(TAG, "Failed to parse display data for $resortId", e)
             null
         }
+    }
+
+    // ── Generic display + weather resorts ──
+
+    private suspend fun fetchGenericDisplayData(resort: ResortConfig, slug: String): FetchResult = coroutineScope {
+        val displayDeferred = async(Dispatchers.IO) { fetchDisplayData(slug) }
+        val weatherDeferred = if (resort.capabilities.weather) {
+            async(Dispatchers.IO) { fetchWeatherStations(slug) }
+        } else null
+        val displaySubs = displayDeferred.await()
+        val wxMap = weatherDeferred?.await()
+
+        val subResorts = displaySubs ?: listOf(SubResortData(slug, resort.name, emptyList(), null))
+
+        // Attach weather stations to sub-resorts
+        val result = if (wxMap != null && wxMap.isNotEmpty()) {
+            val wxStations = wxMap.values.firstOrNull()
+            if (wxStations != null && subResorts.isNotEmpty()) {
+                val first = subResorts[0].copy(stations = wxStations)
+                listOf(first) + subResorts.drop(1)
+            } else subResorts
+        } else subResorts
+
+        FetchResult(subResorts = result, capabilities = resort.capabilities)
     }
 
     // ── Server-vended weather stations ──
@@ -353,9 +380,24 @@ class SkiApi {
     // ── Alta ──
 
     private suspend fun fetchAltaData(resort: ResortConfig): FetchResult = coroutineScope {
-        val displaySubs = async(Dispatchers.IO) { fetchDisplayData("alta") }.await()
+        val displayDeferred = async(Dispatchers.IO) { fetchDisplayData("alta") }
+        val weatherDeferred = if (resort.capabilities.weather) {
+            async(Dispatchers.IO) { fetchWeatherStations("alta") }
+        } else null
+        val displaySubs = displayDeferred.await()
+        val wxMap = weatherDeferred?.await()
+
         val subResorts = displaySubs ?: listOf(SubResortData("alta", "Alta", fetchAltaLifts(), null))
-        FetchResult(subResorts = subResorts, capabilities = resort.capabilities)
+
+        val result = if (wxMap != null && wxMap.isNotEmpty()) {
+            val wxStations = wxMap.values.firstOrNull()
+            if (wxStations != null && subResorts.isNotEmpty()) {
+                val first = subResorts[0].copy(stations = wxStations)
+                listOf(first) + subResorts.drop(1)
+            } else subResorts
+        } else subResorts
+
+        FetchResult(subResorts = result, capabilities = resort.capabilities)
     }
 
     private fun fetchAltaLifts(): List<LiftInfo>? {
@@ -384,9 +426,22 @@ class SkiApi {
     // ── Snowbird ──
 
     private suspend fun fetchSnowbirdData(resort: ResortConfig): FetchResult = coroutineScope {
-        val displaySubs = async(Dispatchers.IO) { fetchDisplayData("snowbird") }.await()
+        val displayDeferred = async(Dispatchers.IO) { fetchDisplayData("snowbird") }
+        val weatherDeferred = if (resort.capabilities.weather) {
+            async(Dispatchers.IO) { fetchWeatherStations("snowbird") }
+        } else null
+        val displaySubs = displayDeferred.await()
+        val wxMap = weatherDeferred?.await()
+
         if (displaySubs != null) {
-            return@coroutineScope FetchResult(displaySubs, resort.capabilities)
+            val result = if (wxMap != null && wxMap.isNotEmpty()) {
+                val wxStations = wxMap.values.firstOrNull()
+                if (wxStations != null && displaySubs.isNotEmpty()) {
+                    val first = displaySubs[0].copy(stations = wxStations)
+                    listOf(first) + displaySubs.drop(1)
+                } else displaySubs
+            } else displaySubs
+            return@coroutineScope FetchResult(result, resort.capabilities)
         }
         // Fallback: fetch and parse client-side
         val lifts = async(Dispatchers.IO) { fetchSnowbirdLifts() }.await()
